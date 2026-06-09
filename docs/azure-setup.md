@@ -1,0 +1,195 @@
+# Azure / Microsoft 365 setup
+
+`m365` authenticates **app-only** (client credentials with a certificate). There
+is **no user login and no consent prompt** — an administrator sets up one Entra
+app registration once, and scopes its access to specific mailboxes and sites.
+
+This guide is for the administrator who prepares the tenant. It covers the one
+Azure app, its certificate, the permissions, and — crucially — how to **scope**
+those permissions so the app only ever touches the mailboxes and sites you
+intend.
+
+> **Two scoping models, on purpose.** Mailbox data (mail, calendar, contacts) is
+> scoped with **RBAC for Applications** in Exchange Online. Files/SharePoint is
+> scoped with **`Sites.Selected`** in Microsoft Graph. They are configured
+> differently — see the relevant sections below.
+
+---
+
+## 1. Register the application (Microsoft Entra ID)
+
+1. Entra admin center → **Identity → Applications → App registrations → New
+   registration**.
+2. Name it (e.g. `m365cli`), single-tenant, no redirect URI.
+3. Note the **Application (client) ID** and **Directory (tenant) ID** from the
+   Overview blade — these go into `config.toml`.
+
+## 2. Add a certificate
+
+App-only auth uses a certificate assertion (preferred over a client secret:
+longer-lived, not a bearer secret on disk).
+
+Generate a self-signed certificate (or use one from your PKI):
+
+```bash
+# Private key + public certificate, valid 365 days
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout m365-key.pem -out m365-cert.pem \
+  -days 365 -subj "/CN=m365cli"
+
+# m365 expects ONE PEM file containing the certificate AND the private key:
+cat m365-cert.pem m365-key.pem > m365-app.pem
+chmod 600 m365-app.pem
+```
+
+Upload the **public** certificate only:
+
+- App registration → **Certificates & secrets → Certificates → Upload
+  certificate** → upload `m365-cert.pem`.
+
+Keep `m365-app.pem` (cert + key) on the machine that runs `m365`, mode `600`.
+**Never** upload the private key or commit it.
+
+## 3. Scope mailbox access — RBAC for Applications
+
+This is how mail, calendar, and contacts are restricted to specific mailboxes.
+
+> ⚠️ **Do not also grant the tenant-wide permission in Entra ID.** RBAC grants
+> are *independent and additive* to Entra app-permission grants. If you grant
+> `Mail.ReadWrite` tenant-wide in Entra **and** scope it via RBAC, the union is
+> effectively unscoped (full-tenant) access. For scoped access, grant the
+> permission **only** through RBAC below — leave the app's Entra **API
+> permissions empty** for mailbox scopes.
+
+Connect as an Exchange admin (member of **Organization Management**):
+
+```powershell
+Connect-ExchangeOnline
+```
+
+**a) Create a pointer to the app's service principal.** Use the IDs from the
+Entra **Enterprise applications** page (App ID + the *enterprise app* Object ID —
+not the App registration object ID):
+
+```powershell
+New-ServicePrincipal -AppId <client-id> -ObjectId <enterprise-app-object-id> -DisplayName "m365cli"
+```
+
+**b) Define a resource scope** (which mailboxes). Easiest: a mail-enabled
+security group whose members are the allowed mailboxes, then a management scope
+that points at it via its distinguished name:
+
+```powershell
+$dn = (Get-Group "m365cli-mailboxes").DistinguishedName
+New-ManagementScope -Name "m365cli scope" -RecipientRestrictionFilter "MemberOfGroup -eq '$dn'"
+```
+
+(You can instead scope by any [recipient filter property](https://learn.microsoft.com/en-us/powershell/exchange/recipientfilter-properties),
+or use a Microsoft Entra **administrative unit** via `-RecipientAdministrativeUnitScope`.)
+
+**c) Assign the application roles, scoped.** For Phase 1 (mail + calendar):
+
+```powershell
+New-ManagementRoleAssignment -App <enterprise-app-object-id> -Role "Application Mail.ReadWrite"     -CustomResourceScope "m365cli scope"
+New-ManagementRoleAssignment -App <enterprise-app-object-id> -Role "Application Mail.Send"          -CustomResourceScope "m365cli scope"
+New-ManagementRoleAssignment -App <enterprise-app-object-id> -Role "Application Calendars.ReadWrite" -CustomResourceScope "m365cli scope"
+# Phase 2 (contacts):
+New-ManagementRoleAssignment -App <enterprise-app-object-id> -Role "Application Contacts.ReadWrite"  -CustomResourceScope "m365cli scope"
+```
+
+> `Application Mail.ReadWrite` does **not** include sending — `Application
+> Mail.Send` is separate. (`Application Mail Full Access` bundles both.)
+
+**d) Verify the scope.** This bypasses the permission cache:
+
+```powershell
+Test-ServicePrincipalAuthorization -Identity "m365cli" -Resource allowed@contoso.com | Format-Table
+# InScope = True for an allowed mailbox, False for one outside the scope.
+```
+
+> **Cache:** RBAC changes take **30 minutes to 2 hours** to apply to live calls
+> (the test cmdlet bypasses this). If `m365` calls fail right after a change,
+> wait and retry.
+
+## 4. Scope file access — `Sites.Selected` (Phase 2)
+
+Files/SharePoint does **not** use Exchange RBAC. Instead:
+
+1. App registration → **API permissions → Add → Microsoft Graph → Application
+   permissions** → add **`Sites.Selected`** → **Grant admin consent**.
+   (For OneDrive/Drive content you may also need `Files.ReadWrite.All` — note
+   that one is *tenant-wide*, so prefer `Sites.Selected` where possible.)
+2. Grant the app access to each target site individually (as an admin, via
+   Graph):
+
+   ```http
+   POST https://graph.microsoft.com/v1.0/sites/{site-id}/permissions
+   {
+     "roles": ["read"],                          // or "write"
+     "grantedToIdentities": [{
+       "application": { "id": "<client-id>", "displayName": "m365cli" }
+     }]
+   }
+   ```
+
+Only sites listed in `allowed_sites` (config) **and** granted here are reachable.
+
+## 5. Write `config.toml`
+
+`~/.config/m365cli/config.toml` (mode `600`):
+
+```toml
+tenant_id  = "<directory-tenant-id>"
+client_id  = "<application-client-id>"
+cert_path  = "/path/to/m365-app.pem"   # cert + private key, one PEM, mode 600
+
+default_mailbox   = "agent@contoso.com"
+allowed_mailboxes = ["agent@contoso.com", "*@contoso.com"]  # exact or glob
+allowed_sites     = ["contoso.sharepoint.com,*"]            # Phase 2
+
+# Direct external send is OFF by default: recipients not listed become drafts.
+send_allow        = ["*@partner.com"]
+# send_unrestricted = true   # disables the external-send guardrail (doctor warns)
+```
+
+`m365`'s allowlists are an **extra** guardrail on top of RBAC/`Sites.Selected`:
+even if RBAC were misconfigured too broadly, `m365` refuses any mailbox or site
+not in the config (fail-closed — an empty list denies all).
+
+## 6. Verify
+
+```bash
+m365 doctor          # offline: config, cert presence, allowlists
+m365 doctor --live   # acquires a real Graph token (verifies cert + tenant)
+m365 mail list --mailbox agent@contoso.com --json
+```
+
+A green `doctor --live` plus a successful `mail list` against an allowed mailbox
+confirms the full chain.
+
+---
+
+## Permission reference
+
+| Domain | Graph permission | How it is granted/scoped |
+| --- | --- | --- |
+| Mail read/write | `Mail.ReadWrite` | RBAC role `Application Mail.ReadWrite`, scoped |
+| Mail send | `Mail.Send` | RBAC role `Application Mail.Send`, scoped |
+| Calendar | `Calendars.ReadWrite` | RBAC role `Application Calendars.ReadWrite`, scoped |
+| Contacts | `Contacts.ReadWrite` | RBAC role `Application Contacts.ReadWrite`, scoped |
+| SharePoint/OneDrive | `Sites.Selected` | Entra consent + per-site grant |
+
+## Troubleshooting
+
+| Symptom | Cause / fix |
+| --- | --- |
+| `AADSTS700027` / cert errors | Uploaded cert doesn't match the key in your PEM, or it expired. Re-generate and re-upload. |
+| `AADSTS90002: Tenant not found` | Wrong `tenant_id`. |
+| Token works, mailbox calls return 403 | RBAC scope not applied yet (wait up to 2h), or the mailbox isn't in your management scope. Check with `Test-ServicePrincipalAuthorization`. |
+| App can read mailboxes outside the scope | A tenant-wide Entra grant is still present — remove it (see the warning in §3). |
+
+## References
+
+- [RBAC for Applications in Exchange Online](https://learn.microsoft.com/en-us/exchange/permissions-exo/application-rbac)
+- [Sites.Selected / per-site permissions](https://learn.microsoft.com/en-us/graph/api/site-post-permissions)
+- [Graph app-only auth (client credentials)](https://learn.microsoft.com/en-us/graph/auth-v2-service)

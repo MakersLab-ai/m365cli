@@ -1,0 +1,13 @@
+# Secrets / local state
+.env
+.gc-state.json
+*.pem
+tokens.json
+
+# Build output
+/bin/
+/m365
+
+# Local tooling / internal planning (not part of the public project)
+.claude/
+tasks/
