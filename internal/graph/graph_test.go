@@ -247,3 +247,41 @@ func TestPatchForMailboxUsesPatchAndEnforcesAllowlist(t *testing.T) {
 		t.Errorf("method = %q, want PATCH", gotMethod)
 	}
 }
+
+func TestMailboxDeltaRejectsOutOfScopeMailbox(t *testing.T) {
+	cfg := &config.Config{AllowedMailboxes: []string{"agent@example.com"}}
+	hit := false
+	c := newTestClient(t, cfg, func(http.ResponseWriter, *http.Request) { hit = true })
+	if _, err := c.MailboxDelta(context.Background(), "x@evil.com", "mailFolders/inbox/messages/delta"); err == nil || hit {
+		t.Fatal("MailboxDelta must reject out-of-scope mailbox before I/O")
+	}
+}
+
+func TestMailboxDeltaBuildsSuffixPath(t *testing.T) {
+	cfg := &config.Config{AllowedMailboxes: []string{"agent@example.com"}}
+	var gotPath string
+	c := newTestClient(t, cfg, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = w.Write([]byte(`{"value":[]}`))
+	})
+	if _, err := c.MailboxDelta(context.Background(), "agent@example.com", "mailFolders/inbox/messages/delta"); err != nil {
+		t.Fatalf("MailboxDelta: %v", err)
+	}
+	if gotPath != "/users/agent@example.com/mailFolders/inbox/messages/delta" {
+		t.Errorf("path = %q", gotPath)
+	}
+}
+
+func TestMailboxDeltaRejectsAbsoluteUrlOffHostOrForeignMailbox(t *testing.T) {
+	cfg := &config.Config{AllowedMailboxes: []string{"agent@example.com"}}
+	c := newTestClient(t, cfg, func(http.ResponseWriter, *http.Request) {})
+	// off graph host
+	if _, err := c.MailboxDelta(context.Background(), "agent@example.com", "https://evil.com/x"); err == nil {
+		t.Error("must reject absolute URL not on the Graph host")
+	}
+	// graph host but a different mailbox
+	if _, err := c.MailboxDelta(context.Background(), "agent@example.com",
+		"https://graph.microsoft.com/v1.0/users/other@example.com/mailFolders/inbox/messages/delta?$deltatoken=x"); err == nil {
+		t.Error("must reject absolute URL belonging to a different mailbox")
+	}
+}

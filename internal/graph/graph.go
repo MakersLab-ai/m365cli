@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/MakersLab-ai/m365cli/internal/config"
@@ -111,6 +112,28 @@ func (c *Client) GetForSite(ctx context.Context, siteID, suffix string) ([]byte,
 	return c.do(ctx, http.MethodGet, path, nil)
 }
 
+// MailboxDelta GETs a mailbox messages/delta resource: either an initial suffix
+// (e.g. "mailFolders/inbox/messages/delta?$select=...") or an absolute
+// deltaLink/nextLink returned by a previous call. It enforces the mailbox
+// allowlist and, for absolute URLs, that they target the Graph host and the same
+// mailbox — so a cursor can never be redirected off-tenant.
+func (c *Client) MailboxDelta(ctx context.Context, mailbox, urlOrSuffix string) ([]byte, error) {
+	if !c.cfg.IsMailboxAllowed(mailbox) {
+		return nil, fmt.Errorf("mailbox %q is not in allowed_mailboxes (out of scope)", mailbox)
+	}
+	if strings.HasPrefix(urlOrSuffix, "http") {
+		if !strings.HasPrefix(urlOrSuffix, "https://graph.microsoft.com/") {
+			return nil, fmt.Errorf("delta url is not on the Microsoft Graph host")
+		}
+		if !strings.Contains(urlOrSuffix, "/users/"+url.PathEscape(mailbox)+"/") &&
+			!strings.Contains(urlOrSuffix, "/users/"+mailbox+"/") {
+			return nil, fmt.Errorf("delta url does not belong to mailbox %q", mailbox)
+		}
+		return c.do(ctx, http.MethodGet, urlOrSuffix, nil)
+	}
+	return c.do(ctx, http.MethodGet, "/users/"+url.PathEscape(mailbox)+"/"+urlOrSuffix, nil)
+}
+
 // mailboxPath enforces the allowlist and builds the scoped Graph path. This is
 // the single choke point through which every mailbox-scoped call must pass.
 func (c *Client) mailboxPath(mailbox, suffix string) (string, error) {
@@ -146,7 +169,11 @@ func (c *Client) doRaw(ctx context.Context, method, path, contentType string, pa
 	if payload != nil {
 		bodyReader = bytes.NewReader(payload)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, bodyReader)
+	target := path
+	if !strings.HasPrefix(path, "http") {
+		target = c.BaseURL + path
+	}
+	req, err := http.NewRequestWithContext(ctx, method, target, bodyReader)
 	if err != nil {
 		return nil, err
 	}
