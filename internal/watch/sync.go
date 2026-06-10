@@ -71,6 +71,13 @@ func (s *Syncer) SyncOnce(ctx context.Context, mailbox string) error {
 		deltaLink = page.DeltaLink
 		break
 	}
+	if deltaLink == "" {
+		// Graph always returns a deltaLink on the final page; an empty one would
+		// silently reset us to first-run on the next poll (re-priming and dropping
+		// new mail). Fail loudly instead so the next interval retries from the
+		// unchanged cursor.
+		return fmt.Errorf("watch %s: delta response missing @odata.deltaLink on final page", mailbox)
+	}
 
 	seen := newStringSet(st.Seen)
 

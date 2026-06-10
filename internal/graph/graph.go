@@ -121,7 +121,7 @@ func (c *Client) MailboxDelta(ctx context.Context, mailbox, urlOrSuffix string) 
 	if !c.cfg.IsMailboxAllowed(mailbox) {
 		return nil, fmt.Errorf("mailbox %q is not in allowed_mailboxes (out of scope)", mailbox)
 	}
-	if strings.HasPrefix(urlOrSuffix, "http") {
+	if strings.HasPrefix(urlOrSuffix, "https://") {
 		if !strings.HasPrefix(urlOrSuffix, "https://graph.microsoft.com/") {
 			return nil, fmt.Errorf("delta url is not on the Microsoft Graph host")
 		}
@@ -170,7 +170,7 @@ func (c *Client) doRaw(ctx context.Context, method, path, contentType string, pa
 		bodyReader = bytes.NewReader(payload)
 	}
 	target := path
-	if !strings.HasPrefix(path, "http") {
+	if !strings.HasPrefix(path, "https://") {
 		target = c.BaseURL + path
 	}
 	req, err := http.NewRequestWithContext(ctx, method, target, bodyReader)

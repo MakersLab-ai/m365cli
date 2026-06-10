@@ -122,3 +122,20 @@ func TestSyncOnceDefaultSkipsChangedMessages(t *testing.T) {
 		t.Error("cursor must still advance even when nothing is delivered")
 	}
 }
+
+func TestSyncOnceErrorsWhenFinalPageHasNoDeltaLink(t *testing.T) {
+	st := NewFileStore(t.TempDir())
+	g := &fakeGraph{responses: [][]byte{
+		[]byte(`{"value":[` + string(msg("m1", "b@x.com", "S", "p", "body", false)) + `]}`),
+	}}
+	h := &fakeHook{}
+	s := &Syncer{Graph: g, Hook: h, Store: st, Opts: Options{Folder: "inbox"}}
+
+	if err := s.SyncOnce(context.Background(), "a@x.com"); err == nil {
+		t.Fatal("expected error when the final page has no deltaLink")
+	}
+	got, _ := st.Get("a@x.com", "inbox")
+	if got.DeltaLink != "" {
+		t.Errorf("nothing must be persisted on a missing deltaLink, got %+v", got)
+	}
+}

@@ -124,13 +124,19 @@ func resolveWatchMailboxes(cfg *config.Config, flagMailboxes []string, all bool)
 	return []string{cfg.DefaultMailbox}, nil
 }
 
-// parseInterval accepts a Go duration ("30s", "2m") or bare seconds ("30").
+// parseInterval accepts a Go duration ("30s", "2m") or bare seconds ("30"). A
+// zero or negative interval is rejected: time.After(0) fires immediately, which
+// would busy-loop the poller and hammer Graph/the webhook with no back-pressure.
 func parseInterval(s string) (time.Duration, error) {
-	if d, err := time.ParseDuration(s); err == nil {
-		return d, nil
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		d, err = time.ParseDuration(s + "s")
 	}
-	if secs, err := time.ParseDuration(s + "s"); err == nil {
-		return secs, nil
+	if err != nil {
+		return 0, fmt.Errorf("invalid --interval %q (use 30s, 2m, or a number of seconds)", s)
 	}
-	return 0, fmt.Errorf("invalid --interval %q (use 30s, 2m, or a number of seconds)", s)
+	if d <= 0 {
+		return 0, fmt.Errorf("--interval must be positive, got %q", s)
+	}
+	return d, nil
 }
