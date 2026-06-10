@@ -1,5 +1,7 @@
 # Azure / Microsoft 365 setup
 
+> 🇩🇪 Deutsche Version: **[azure-setup.de.md](azure-setup.de.md)**
+
 `m365` authenticates **app-only** (client credentials with a certificate). There
 is **no user login and no consent prompt** — an administrator sets up one Entra
 app registration once, and scopes its access to specific mailboxes and sites.
@@ -113,12 +115,17 @@ Test-ServicePrincipalAuthorization -Identity "m365cli" -Resource allowed@contoso
 
 ## 4. Scope file access — `Sites.Selected` (Phase 2)
 
-Files/SharePoint does **not** use Exchange RBAC. Instead:
+Files (SharePoint **and** OneDrive) do **not** use Exchange RBAC. Instead:
+
+> ⚠️ **Avoid `Files.ReadWrite.All` / `Files.Read.All`.** Those are *tenant-wide*:
+> the app can reach **every** user's OneDrive and **every** site, and Azure
+> offers **no way to restrict them to individual drives**. `Sites.Selected` is
+> the scoped alternative — default-deny, with explicit per-site/per-drive grants.
 
 1. App registration → **API permissions → Add → Microsoft Graph → Application
    permissions** → add **`Sites.Selected`** → **Grant admin consent**.
-   (For OneDrive/Drive content you may also need `Files.ReadWrite.All` — note
-   that one is *tenant-wide*, so prefer `Sites.Selected` where possible.)
+   With only this consent the app has access to **nothing** until you grant
+   sites individually below.
 2. Grant the app access to each target site individually (as an admin, via
    Graph):
 
@@ -133,6 +140,35 @@ Files/SharePoint does **not** use Exchange RBAC. Instead:
    ```
 
 Only sites listed in `allowed_sites` (config) **and** granted here are reachable.
+
+### Scoping individual OneDrives
+
+A user's OneDrive is technically a **personal SharePoint site**
+(`contoso-my.sharepoint.com/personal/user_contoso_com`), so the same
+`Sites.Selected` grant works per OneDrive — the app gets access to exactly the
+drives you grant, and nothing else.
+
+1. Find the site ID of the user's OneDrive (as an admin with sufficient rights,
+   e.g. via Graph Explorer):
+
+   ```http
+   GET https://graph.microsoft.com/v1.0/users/{user}/drive?$select=sharePointIds
+   # → sharePointIds.siteId is the {site-id} for the permissions call
+   ```
+
+2. Grant access with the same `POST /sites/{site-id}/permissions` call as above.
+
+Notes:
+
+- **One grant per drive.** There is no group/bulk grant ("all OneDrives of
+  department X") — each drive is an individual grant. The calls are easy to
+  script for a list of users.
+- **Finer than a whole drive:** the newer `Files.SelectedOperations.Selected`
+  and `Lists.SelectedOperations.Selected` application permissions support
+  grants down to individual **folders, files, or document libraries** instead
+  of a whole site/drive, via the corresponding `permissions` endpoints.
+- **No grant → no access.** Without an explicit grant, every `m365 drive` call
+  fails with 403 from Graph, regardless of `allowed_mailboxes`.
 
 ## 5. Write `config.toml`
 
@@ -177,7 +213,8 @@ confirms the full chain.
 | Mail send | `Mail.Send` | RBAC role `Application Mail.Send`, scoped |
 | Calendar | `Calendars.ReadWrite` | RBAC role `Application Calendars.ReadWrite`, scoped |
 | Contacts | `Contacts.ReadWrite` | RBAC role `Application Contacts.ReadWrite`, scoped |
-| SharePoint/OneDrive | `Sites.Selected` | Entra consent + per-site grant |
+| SharePoint/OneDrive | `Sites.Selected` | Entra consent + per-site/per-drive grant (a OneDrive is a personal site) |
+| Single folders/files (optional) | `Files.SelectedOperations.Selected`, `Lists.SelectedOperations.Selected` | Entra consent + per-item grant |
 
 ## Troubleshooting
 
@@ -187,9 +224,11 @@ confirms the full chain.
 | `AADSTS90002: Tenant not found` | Wrong `tenant_id`. |
 | Token works, mailbox calls return 403 | RBAC scope not applied yet (wait up to 2h), or the mailbox isn't in your management scope. Check with `Test-ServicePrincipalAuthorization`. |
 | App can read mailboxes outside the scope | A tenant-wide Entra grant is still present — remove it (see the warning in §3). |
+| `drive`/`sp` calls return 403 | No `Sites.Selected` grant for that site/OneDrive yet — grant it per §4. |
 
 ## References
 
 - [RBAC for Applications in Exchange Online](https://learn.microsoft.com/en-us/exchange/permissions-exo/application-rbac)
 - [Sites.Selected / per-site permissions](https://learn.microsoft.com/en-us/graph/api/site-post-permissions)
+- [Overview of Selected permissions in OneDrive and SharePoint](https://learn.microsoft.com/en-us/graph/permissions-selected-overview)
 - [Graph app-only auth (client credentials)](https://learn.microsoft.com/en-us/graph/auth-v2-service)

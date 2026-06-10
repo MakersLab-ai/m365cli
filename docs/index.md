@@ -11,7 +11,9 @@ output for terminals, scripts, CI, and coding agents. Made by
   security model.
 - **[Azure setup](azure-setup.md)** — the administrator guide: app registration,
   certificate, RBAC for Applications (mail/calendar/contacts) and
-  `Sites.Selected` (drive/SharePoint), and the `config.toml` mapping.
+  `Sites.Selected` (drive/SharePoint, incl. per-OneDrive grants), and the
+  `config.toml` mapping. Also available in German:
+  [azure-setup.de.md](azure-setup.de.md).
 - **[Watching mail](watch.md)** — `m365 mail watch poll`: delta-poll mailboxes
   and forward new mail to a webhook (usage, payload, reliability contract).
 - **[Agent skill](../.agents/skills/m365/SKILL.md)** — how a coding agent should
