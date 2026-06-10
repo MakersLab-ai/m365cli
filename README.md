@@ -75,7 +75,8 @@ m365 doctor --live   # acquires a real Graph token (verifies cert + tenant)
 ```
 m365 doctor    [--live]                                     # config + token health
 m365 mail      list read search send draft reply
-               attachments get-attachment                   # scoped by allowed_mailboxes
+               attachments get-attachment
+               watch poll                                   # scoped by allowed_mailboxes
 m365 calendar  list get create update delete
                freebusy find-times                          # scoped by allowed_mailboxes
 m365 contacts  list get add                                 # scoped by allowed_mailboxes
@@ -98,6 +99,13 @@ m365 mail send --mailbox agent@contoso.com \
 m365 mail send --to stranger@example.com --subject Hi --body-file ./body.txt
 # stderr: send guardrail: [stranger@example.com] not in send_allow — saving as draft
 ```
+
+### Watching a mailbox
+
+`m365 mail watch poll` delta-polls one or more mailboxes and forwards new mail
+to a webhook (gog-compatible payload) — no public inbound endpoint required.
+See **[docs/watch.md](docs/watch.md)** for usage, payload, and the reliability
+contract.
 
 ## Output
 

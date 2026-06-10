@@ -12,6 +12,8 @@ output for terminals, scripts, CI, and coding agents. Made by
 - **[Azure setup](azure-setup.md)** — the administrator guide: app registration,
   certificate, RBAC for Applications (mail/calendar/contacts) and
   `Sites.Selected` (drive/SharePoint), and the `config.toml` mapping.
+- **[Watching mail](watch.md)** — `m365 mail watch poll`: delta-poll mailboxes
+  and forward new mail to a webhook (usage, payload, reliability contract).
 - **[Agent skill](../.agents/skills/m365/SKILL.md)** — how a coding agent should
   drive `m365` (fast path, safety rules, common reads/writes).
 
@@ -20,7 +22,7 @@ output for terminals, scripts, CI, and coding agents. Made by
 | Domain | Verbs | Scope |
 | --- | --- | --- |
 | `doctor` | (`--live`) | config + certificate + token health |
-| `mail` | list, read, search, send, draft, reply, attachments, get-attachment | `allowed_mailboxes` |
+| `mail` | list, read, search, send, draft, reply, attachments, get-attachment, watch poll | `allowed_mailboxes` |
 | `calendar` | list, get, create, update, delete, freebusy, find-times | `allowed_mailboxes` |
 | `contacts` | list, get, add | `allowed_mailboxes` |
 | `drive` | ls, search, get, download, upload | `allowed_mailboxes` (OneDrive) |

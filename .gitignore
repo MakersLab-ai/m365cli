@@ -11,3 +11,6 @@ tokens.json
 # Local tooling / internal planning (not part of the public project)
 .claude/
 tasks/
+
+# Local tooling: session learnings
+LEARNINGS.md
