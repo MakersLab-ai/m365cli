@@ -1,6 +1,18 @@
 ---
 name: m365
 description: "m365 CLI: app-only Microsoft 365 / Graph automation — mail, calendar, contacts, OneDrive, SharePoint. Stable JSON, hard allowlists, no user login."
+homepage: https://github.com/MakersLab-ai/m365cli
+metadata:
+  openclaw:
+    emoji: 📧
+    requires:
+      bins: ["m365"]
+    install:
+      - id: go
+        kind: shell
+        command: go install github.com/MakersLab-ai/m365cli/cmd/m365@latest
+        bins: ["m365"]
+        label: "Install m365 (go install)"
 ---
 
 # m365
