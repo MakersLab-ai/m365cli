@@ -11,6 +11,18 @@ Azure app, its certificate, the permissions, and — crucially — how to **scop
 those permissions so the app only ever touches the mailboxes and sites you
 intend.
 
+> ### ✅ For IT admins: your tasks at a glance
+>
+> If you received this guide because an **AI assistant** is being connected
+> (e.g. it emailed you this link with a certificate attached):
+>
+> - **Your tasks are sections 1–4 only** (register the app, upload the
+>   certificate, scope mailbox access, optionally file access).
+> - **Then reply with just two values** (see the box after section 4): the
+>   **Directory (tenant) ID** and the **Application (client) ID**.
+> - **Sections 5–6 happen automatically on the assistant's side** — nothing to
+>   do there. They are documented so you can see what happens on the other end.
+
 > **Two scoping models, on purpose.** Mailbox data (mail, calendar, contacts) is
 > scoped with **RBAC for Applications** in Exchange Online. Files/SharePoint is
 > scoped with **`Sites.Selected`** in Microsoft Graph. They are configured
@@ -170,7 +182,32 @@ Notes:
 - **No grant → no access.** Without an explicit grant, every `m365 drive` call
   fails with 403 from Graph, regardless of `allowed_mailboxes`.
 
-## 5. Write `config.toml`
+---
+
+## ✅ For IT admins: done! Send these two values back
+
+With section 3 (and 4, if file access is wanted) complete, your part is done.
+Reply to the AI assistant's email with these two values from the app
+registration's Overview blade:
+
+1. **Directory (tenant) ID**
+2. **Application (client) ID**
+
+Both are non-sensitive without the private key and fine to send by email. The
+assistant handles the rest (sections 5–6) automatically.
+
+> **Note:** RBAC changes take up to 2 hours to apply to live calls. If the
+> assistant reports the connection isn't working yet, that's normal within the
+> first 2 hours — it retries on its own. You can verify immediately with
+> `Test-ServicePrincipalAuthorization` (section 3d).
+
+---
+
+## 5. Write `config.toml` — done by the assistant
+
+> **Nothing to do here for IT.** This section documents what happens
+> automatically on the assistant's side once your two IDs arrive. (If you run
+> `m365` manually without an assistant, this step is yours.)
 
 `~/.config/m365cli/config.toml` (mode `600`):
 
@@ -192,7 +229,10 @@ send_allow        = ["*@partner.com"]
 even if RBAC were misconfigured too broadly, `m365` refuses any mailbox or site
 not in the config (fail-closed — an empty list denies all).
 
-## 6. Verify
+## 6. Verify — done by the assistant
+
+> **Nothing to do here for IT** — the assistant verifies the connection itself
+> and reports back to its user.
 
 ```bash
 m365 doctor          # offline: config, cert presence, allowlists

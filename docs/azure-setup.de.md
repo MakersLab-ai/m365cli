@@ -12,6 +12,21 @@ Sie behandelt die eine Azure-App, ihr Zertifikat, die Berechtigungen und — gan
 entscheidend — wie diese Berechtigungen **eingegrenzt** werden, damit die App nur
 die Postfächer und Sites anfasst, die vorgesehen sind.
 
+> ### ✅ Für die IT: Ihre Aufgaben auf einen Blick
+>
+> Wenn Sie diese Anleitung erhalten haben, weil ein **AI-Assistent** angebunden
+> werden soll (z. B. wurde sie Ihnen von ihm per E-Mail mit Zertifikat-Anhang
+> zugeschickt), dann gilt:
+>
+> - **Ihre Aufgaben sind ausschließlich die Abschnitte 1 bis 4** (App
+>   registrieren, Zertifikat hochladen, Postfach-Berechtigungen eingrenzen,
+>   optional Dateizugriff).
+> - **Danach senden Sie nur zwei Werte zurück** (siehe Kasten nach Abschnitt 4):
+>   die **Directory (tenant) ID** und die **Application (client) ID**.
+> - **Die Abschnitte 5 und 6 erledigt der Assistent automatisch** — dort ist
+>   für Sie nichts zu tun. Sie sind nur dokumentiert, damit Sie nachvollziehen
+>   können, was auf der Gegenseite passiert.
+
 > **Zwei Scoping-Modelle, mit Absicht.** Postfachdaten (Mail, Kalender,
 > Kontakte) werden mit **RBAC for Applications** in Exchange Online eingegrenzt.
 > Dateien/SharePoint werden mit **`Sites.Selected`** in Microsoft Graph
@@ -180,7 +195,33 @@ Hinweise:
   `m365 drive`-Aufruf mit 403 von Graph fehl — unabhängig von
   `allowed_mailboxes`.
 
-## 5. `config.toml` schreiben
+---
+
+## ✅ Für die IT: Fertig! Das senden Sie jetzt zurück
+
+Mit Abschluss von Abschnitt 3 (bzw. 4, falls Dateizugriff gewünscht) sind Ihre
+Aufgaben erledigt. Senden Sie dem AI-Assistenten (einfach auf seine E-Mail
+antworten) diese zwei Werte vom Overview-Blade der App-Registrierung:
+
+1. **Directory (tenant) ID**
+2. **Application (client) ID**
+
+Beide Werte sind ohne den privaten Schlüssel unkritisch und können per E-Mail
+gesendet werden. Den Rest (Abschnitte 5–6) erledigt der Assistent automatisch.
+
+> **Hinweis:** RBAC-Änderungen brauchen bis zu 2 Stunden, bis sie für
+> Live-Aufrufe greifen. Wenn der Assistent meldet, dass die Verbindung noch
+> nicht funktioniert, ist das in den ersten 2 Stunden normal — er versucht es
+> selbständig erneut. Sofort prüfen können Sie selbst mit
+> `Test-ServicePrincipalAuthorization` (Abschnitt 3d).
+
+---
+
+## 5. `config.toml` schreiben — erledigt der Assistent
+
+> **Für die IT ist hier nichts zu tun.** Dieser Abschnitt dokumentiert, was auf
+> der Assistenten-Seite automatisch passiert, sobald Ihre zwei IDs eintreffen.
+> (Wer `m365` ohne Assistenten manuell betreibt, führt diesen Schritt selbst aus.)
 
 `~/.config/m365cli/config.toml` (Modus `600`):
 
@@ -203,7 +244,10 @@ RBAC/`Sites.Selected`: Selbst wenn RBAC zu breit konfiguriert wäre, verweigert
 `m365` jedes Postfach und jede Site, die nicht in der Config steht (fail-closed
 — eine leere Liste verbietet alles).
 
-## 6. Verifizieren
+## 6. Verifizieren — erledigt der Assistent
+
+> **Für die IT ist hier nichts zu tun** — der Assistent prüft die Verbindung
+> selbst und meldet dem Nutzer Vollzug.
 
 ```bash
 m365 doctor          # offline: Config, Zertifikat vorhanden, Allowlists
