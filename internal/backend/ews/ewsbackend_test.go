@@ -77,16 +77,59 @@ func TestMailReadEmitsGraphShape(t *testing.T) {
 	}
 }
 
+const createSendSuccess = `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body>
+ <m:CreateItemResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+   xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><m:ResponseMessages>
+  <m:CreateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items/>
+  </m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse></soap:Body></soap:Envelope>`
+
+const createDraftSuccess = `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body>
+ <m:CreateItemResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+   xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><m:ResponseMessages>
+  <m:CreateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode>
+   <m:Items><t:Message><t:ItemId Id="DRAFT-1" ChangeKey="CQ=="/></t:Message></m:Items>
+  </m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse></soap:Body></soap:Envelope>`
+
+func TestMailSendSucceeds(t *testing.T) {
+	be := newBackend(t, createSendSuccess)
+	if err := be.Mail().Send(context.Background(), mbx, mail.Message{Subject: "s", Body: "b", To: []string{"x@y.com"}}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+}
+
+func TestMailCreateDraftReturnsID(t *testing.T) {
+	be := newBackend(t, createDraftSuccess)
+	id, err := be.Mail().CreateDraft(context.Background(), mbx, mail.Message{Subject: "s", Body: "b", To: []string{"x@y.com"}})
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	if id != "DRAFT-1" {
+		t.Errorf("draft id = %q, want DRAFT-1", id)
+	}
+}
+
+func TestMailSearchEmitsGraphShape(t *testing.T) {
+	be := newBackend(t, findItemSuccess)
+	got, err := be.Mail().Search(context.Background(), mbx, backend.SearchOpts{Query: "subject:report", Max: 25})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	want := `[{"id":"AAA=","subject":"Quarterly report","from":{"emailAddress":{"name":"Jane Doe","address":""}},"receivedDateTime":"2026-06-28T14:03:22Z","isRead":false}]`
+	if string(got) != want {
+		t.Errorf("Search JSON mismatch\n got: %s\nwant: %s", got, want)
+	}
+}
+
 func TestUnimplementedReturnErrUnsupported(t *testing.T) {
 	be := newBackend(t, findItemSuccess)
 	ctx := context.Background()
 	if _, err := be.Calendar().List(ctx, mbx, backend.CalListOpts{}); !errors.Is(err, backend.ErrUnsupported) {
 		t.Errorf("Calendar.List: want ErrUnsupported, got %v", err)
 	}
-	if _, err := be.Mail().Search(ctx, mbx, backend.SearchOpts{}); !errors.Is(err, backend.ErrUnsupported) {
-		t.Errorf("Mail.Search: want ErrUnsupported, got %v", err)
+	if err := be.Mail().Reply(ctx, mbx, "id", "body", false); !errors.Is(err, backend.ErrUnsupported) {
+		t.Errorf("Mail.Reply: want ErrUnsupported, got %v", err)
 	}
-	if err := be.Mail().Send(ctx, mbx, mail.Message{To: []string{"x@y.com"}}); !errors.Is(err, backend.ErrUnsupported) {
-		t.Errorf("Mail.Send: want ErrUnsupported, got %v", err)
+	if _, err := be.Mail().Attachments(ctx, mbx, "id"); !errors.Is(err, backend.ErrUnsupported) {
+		t.Errorf("Mail.Attachments: want ErrUnsupported, got %v", err)
 	}
 }

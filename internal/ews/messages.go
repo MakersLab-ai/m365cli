@@ -37,9 +37,10 @@ type Item struct {
 type envelope struct {
 	XMLName xml.Name
 	Body    struct {
-		Fault            *soapFault        `xml:"Fault"`
-		FindItemResponse *findItemResponse `xml:"FindItemResponse"`
-		GetItemResponse  *getItemResponse  `xml:"GetItemResponse"`
+		Fault              *soapFault          `xml:"Fault"`
+		FindItemResponse   *findItemResponse   `xml:"FindItemResponse"`
+		GetItemResponse    *getItemResponse    `xml:"GetItemResponse"`
+		CreateItemResponse *createItemResponse `xml:"CreateItemResponse"`
 	} `xml:"Body"`
 }
 
@@ -144,6 +145,12 @@ func (c *Client) FindInbox(ctx context.Context, mailbox string, max int) ([]Item
 	if err != nil {
 		return nil, err
 	}
+	return itemsFromFind(env)
+}
+
+// itemsFromFind validates a FindItem response and maps its messages to Items.
+// Shared by FindInbox and Search (both use FindItem with the same ItemShape).
+func itemsFromFind(env *envelope) ([]Item, error) {
 	if env.Body.FindItemResponse == nil || len(env.Body.FindItemResponse.Messages) == 0 {
 		return nil, fmt.Errorf("ews: empty FindItem response")
 	}

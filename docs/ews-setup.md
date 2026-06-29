@@ -4,9 +4,11 @@ For organizations whose mail lives on a **local Exchange server** rather than in
 Microsoft 365, `m365` can talk **EWS** (Exchange Web Services) instead of the
 Graph cloud API. Select it with `backend = "ews"` in `config.toml`.
 
-> **Status: preview.** This first slice implements `mail list` and `mail read`.
-> Other commands return `operation not supported by this backend`. The path has
-> been validated against fixtures (httptest), not yet against a live server.
+> **Status: preview.** Implemented: `mail list`, `mail read`, `mail search`,
+> `mail send`, `mail draft`. Not yet on EWS: `mail reply`, attachments, calendar,
+> contacts, drive/SharePoint, and `mail watch` — these return `operation not
+> supported by this backend`. The path is validated against fixtures (httptest),
+> not yet against a live server.
 
 ## How it differs from the cloud (Graph) backend
 
@@ -45,7 +47,12 @@ The password is read from `ews_password_file` (a `0600` file) — never put it i
 ```sh
 m365 --config config.toml mail list --max 5
 m365 --config config.toml mail read <message-id>
+m365 --config config.toml mail search "subject:invoice"
+m365 --config config.toml mail send --to user@example.com --subject Hi --body-file ./msg.txt
 ```
+
+`send` honours the same `send_allow` guardrail as the cloud backend: a recipient
+outside the allowlist downgrades the message to a draft for review.
 
 A `401` error means the service account credentials or impersonation rights are
 wrong; an EWS `ResponseCode` (e.g. `ErrorImpersonateUserDenied`) points at the
