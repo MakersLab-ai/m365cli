@@ -29,8 +29,8 @@ func New(c *ews.Client) *Backend { return &Backend{c: c} }
 func (b *Backend) Mail() backend.MailService         { return mailSvc{c: b.c} }
 func (b *Backend) Calendar() backend.CalendarService { return calSvc{} }
 func (b *Backend) Contacts() backend.ContactService  { return contactSvc{} }
-func (b *Backend) Drive() backend.DriveService        { return driveSvc{} }
-func (b *Backend) Sites() backend.SiteService         { return siteSvc{} }
+func (b *Backend) Drive() backend.DriveService       { return driveSvc{} }
+func (b *Backend) Sites() backend.SiteService        { return siteSvc{} }
 
 // --- mapping to the Graph-shaped JSON contract ---
 

@@ -17,7 +17,9 @@ type calSvc struct{}
 func (calSvc) List(context.Context, string, backend.CalListOpts) ([]byte, error) {
 	return nil, backend.ErrUnsupported
 }
-func (calSvc) Get(context.Context, string, string) ([]byte, error) { return nil, backend.ErrUnsupported }
+func (calSvc) Get(context.Context, string, string) ([]byte, error) {
+	return nil, backend.ErrUnsupported
+}
 func (calSvc) Create(context.Context, string, calendar.Event) ([]byte, error) {
 	return nil, backend.ErrUnsupported
 }
