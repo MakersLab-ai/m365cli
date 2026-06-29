@@ -80,6 +80,19 @@ func TestValidateAcceptsCompleteConfig(t *testing.T) {
 	}
 }
 
+func TestValidateBackendField(t *testing.T) {
+	for _, b := range []string{"", "graph", "ews"} {
+		cfg := Config{Backend: b, TenantID: "t", ClientID: "c", CertPath: "p"}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate(backend=%q): unexpected error: %v", b, err)
+		}
+	}
+	cfg := Config{Backend: "imap", TenantID: "t", ClientID: "c", CertPath: "p"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("Validate: expected error for unknown backend")
+	}
+}
+
 func TestValidateRejectsDefaultMailboxOutsideAllowlist(t *testing.T) {
 	cfg := Config{
 		TenantID: "t", ClientID: "c", CertPath: "p",

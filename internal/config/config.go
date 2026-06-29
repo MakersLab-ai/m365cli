@@ -20,6 +20,10 @@ import (
 // write domain patterns like "*@contoso.com" or "contoso.sharepoint.com,*".
 // Empty lists fail closed (deny all).
 type Config struct {
+	// Backend selects the transport: "graph" (default, Microsoft 365 cloud) or
+	// "ews" (on-premise Exchange — accepted but not yet implemented). Empty is
+	// treated as "graph".
+	Backend          string   `toml:"backend"`
 	TenantID         string   `toml:"tenant_id"`
 	ClientID         string   `toml:"client_id"`
 	CertPath         string   `toml:"cert_path"`
@@ -49,6 +53,12 @@ func Load(path string) (*Config, error) {
 // Validate checks that the core auth fields are present and that any configured
 // default_mailbox is itself within the mailbox allowlist.
 func (c *Config) Validate() error {
+	switch c.Backend {
+	case "", "graph", "ews":
+		// known
+	default:
+		return fmt.Errorf("config: unknown backend %q (want \"graph\" or \"ews\")", c.Backend)
+	}
 	if strings.TrimSpace(c.TenantID) == "" {
 		return fmt.Errorf("config: tenant_id is required")
 	}
