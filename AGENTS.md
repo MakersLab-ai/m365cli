@@ -8,14 +8,19 @@
   talk only to the `internal/backend` seam, never to a transport directly.
 - `internal/backend/`: the transport-agnostic seam — per-domain service
   interfaces (`MailService`, `CalendarService`, ...) the CLI depends on. The
-  `backend` config field selects an implementation (`graph` default, `ews`
-  planned for on-premise Exchange).
+  `backend` config field selects an implementation (`graph` default, `ews` for
+  on-premise Exchange). Unimplemented operations return `backend.ErrUnsupported`.
 - `internal/backend/graph/`: the Microsoft Graph implementation of the seam
   (REST suffixes, `$select`, the `{value}` unwrap) — composes `internal/graph`.
+- `internal/backend/ews/`: the on-premise Exchange (EWS) implementation —
+  composes `internal/ews` and maps EWS Items to the same Graph-shaped JSON the
+  graph backend emits. Currently covers mail list/read.
 - `internal/config/`: config loading + the fail-closed allowlist matcher.
 - `internal/auth/`: app-only certificate auth (MSAL) + 0600 token cache.
-- `internal/graph/`: the scoped Graph REST client — the single choke point that
-  enforces `allowed_mailboxes` / `allowed_sites` before any network call.
+- `internal/graph/`: the scoped Graph REST client — the Graph-side choke point
+  that enforces `allowed_mailboxes` / `allowed_sites` before any network call.
+- `internal/ews/`: the NTLM EWS SOAP client — the EWS-side choke point; reaches
+  each mailbox via ExchangeImpersonation and enforces the same allowlist.
 - `internal/{mail,calendar,contacts}/`: HTTP-independent domain logic and Graph
   payload builders (the send guardrail lives in `mail`).
 - `docs/`: setup and reference docs. `.agents/skills/m365/`: the agent skill.
@@ -33,11 +38,12 @@
   graph, and the domain builders). CLI glue is exercised via the domain packages.
 - **Output discipline.** Data → stdout (the JSON envelope via `internal/output`);
   human hints/progress → stderr. Keep stdout parseable.
-- **Security is centralized.** All mailbox/site access goes through
-  `internal/graph` so the allowlist cannot be bypassed. Don't add Graph calls
-  that skip it (the one documented exception is `SearchSites`, read-only
-  discovery). Never put secrets on the command line; mail/event bodies come from
-  `--body-file`.
+- **Security is centralized.** All mailbox/site access goes through the
+  transport choke point — `internal/graph` (Graph) or `internal/ews` (EWS) — so
+  the allowlist cannot be bypassed. Don't add transport calls that skip it (the
+  one documented exception is Graph `SearchSites`, read-only discovery). Never
+  put secrets on the command line; mail/event bodies come from `--body-file`,
+  and the EWS NTLM password is read from `ews_password_file` (0600).
 - **Fail closed.** Empty allowlists deny everything; new guardrails should keep
   that property.
 
