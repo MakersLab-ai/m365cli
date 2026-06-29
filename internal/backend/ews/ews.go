@@ -8,6 +8,7 @@
 package ewsbackend
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 
@@ -27,7 +28,7 @@ type Backend struct {
 func New(c *ews.Client) *Backend { return &Backend{c: c} }
 
 func (b *Backend) Mail() backend.MailService         { return mailSvc{c: b.c} }
-func (b *Backend) Calendar() backend.CalendarService { return calSvc{} }
+func (b *Backend) Calendar() backend.CalendarService { return calSvc{c: b.c} }
 func (b *Backend) Contacts() backend.ContactService  { return contactSvc{} }
 func (b *Backend) Drive() backend.DriveService       { return driveSvc{} }
 func (b *Backend) Sites() backend.SiteService        { return siteSvc{} }
@@ -96,6 +97,31 @@ func summariesJSON(items []ews.Item) ([]byte, error) {
 		})
 	}
 	return json.Marshal(out)
+}
+
+type jsonAttachment struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	ContentType string `json:"contentType"`
+	Size        int64  `json:"size"`
+}
+
+func attachmentsJSON(atts []ews.Attachment) ([]byte, error) {
+	out := make([]jsonAttachment, 0, len(atts))
+	for _, a := range atts {
+		out = append(out, jsonAttachment{ID: a.ID, Name: a.Name, ContentType: a.ContentType, Size: a.Size})
+	}
+	return json.Marshal(out)
+}
+
+// attachmentContentJSON mirrors the Graph attachment resource the CLI decodes
+// (name + base64 contentBytes) so `get-attachment --out` works unchanged.
+func attachmentContentJSON(ac ews.AttachmentContent) ([]byte, error) {
+	return json.Marshal(map[string]any{
+		"name":         ac.Name,
+		"contentType":  ac.ContentType,
+		"contentBytes": base64.StdEncoding.EncodeToString(ac.Bytes),
+	})
 }
 
 func messageJSON(it ews.Item) ([]byte, error) {
