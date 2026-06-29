@@ -1,12 +1,9 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -24,8 +21,6 @@ func newDriveCmd() *cobra.Command {
 	return d
 }
 
-const driveItemSelect = "id,name,size,folder,file,lastModifiedDateTime,webUrl"
-
 func newDriveLsCmd() *cobra.Command {
 	var mailbox, path string
 	cmd := &cobra.Command{
@@ -36,13 +31,11 @@ func newDriveLsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var suffix string
-			if path == "" || path == "/" {
-				suffix = "drive/root/children?$select=" + driveItemSelect
-			} else {
-				suffix = "drive/root:/" + escapeDrivePath(path) + ":/children?$select=" + driveItemSelect
+			data, err := client.Drive().List(cmd.Context(), mbx, path)
+			if err != nil {
+				return err
 			}
-			return emitGraphValue(cmd.Context(), client, mbx, suffix)
+			return emitData(data)
 		},
 	}
 	cmd.Flags().StringVar(&mailbox, "mailbox", "", "mailbox/user whose drive to list (defaults to default_mailbox)")
@@ -61,8 +54,11 @@ func newDriveSearchCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			suffix := "drive/root/search(q='" + url.QueryEscape(args[0]) + "')?$select=" + driveItemSelect
-			return emitGraphValue(cmd.Context(), client, mbx, suffix)
+			data, err := client.Drive().Search(cmd.Context(), mbx, args[0])
+			if err != nil {
+				return err
+			}
+			return emitData(data)
 		},
 	}
 	cmd.Flags().StringVar(&mailbox, "mailbox", "", "mailbox/user whose drive to search (defaults to default_mailbox)")
@@ -80,11 +76,11 @@ func newDriveGetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			body, err := client.GetForMailbox(cmd.Context(), mbx, "drive/items/"+url.PathEscape(args[0])+"?$select="+driveItemSelect)
+			data, err := client.Drive().Get(cmd.Context(), mbx, args[0])
 			if err != nil {
 				return err
 			}
-			return output.WriteJSON(os.Stdout, json.RawMessage(body))
+			return emitData(data)
 		},
 	}
 	cmd.Flags().StringVar(&mailbox, "mailbox", "", "mailbox/user whose drive (defaults to default_mailbox)")
@@ -105,7 +101,7 @@ func newDriveDownloadCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			content, err := client.GetForMailbox(cmd.Context(), mbx, "drive/items/"+url.PathEscape(args[0])+"/content")
+			content, err := client.Drive().Download(cmd.Context(), mbx, args[0])
 			if err != nil {
 				return err
 			}
@@ -139,25 +135,14 @@ func newDriveUploadCmd() *cobra.Command {
 			if name == "" {
 				name = filepath.Base(args[0])
 			}
-			suffix := "drive/root:/" + escapeDrivePath(name) + ":/content"
-			body, err := client.PutRawForMailbox(cmd.Context(), mbx, suffix, "application/octet-stream", content)
+			data, err := client.Drive().Upload(cmd.Context(), mbx, name, content)
 			if err != nil {
 				return err
 			}
-			return output.WriteJSON(os.Stdout, json.RawMessage(body))
+			return emitData(data)
 		},
 	}
 	cmd.Flags().StringVar(&mailbox, "mailbox", "", "mailbox/user whose drive (defaults to default_mailbox)")
 	cmd.Flags().StringVar(&dest, "dest", "", "destination name/path in the drive (default: local file name)")
 	return cmd
-}
-
-// escapeDrivePath escapes each path segment while keeping the slashes that
-// separate drive folders.
-func escapeDrivePath(p string) string {
-	segments := strings.Split(strings.TrimPrefix(p, "/"), "/")
-	for i, s := range segments {
-		segments[i] = url.PathEscape(s)
-	}
-	return strings.Join(segments, "/")
 }

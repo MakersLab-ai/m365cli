@@ -1,16 +1,13 @@
 package cli
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 
 	"github.com/spf13/cobra"
 
+	"github.com/MakersLab-ai/m365cli/internal/backend"
 	"github.com/MakersLab-ai/m365cli/internal/calendar"
-	"github.com/MakersLab-ai/m365cli/internal/graph"
 	"github.com/MakersLab-ai/m365cli/internal/output"
 )
 
@@ -27,8 +24,6 @@ func newCalendarCmd() *cobra.Command {
 	return cal
 }
 
-const eventSelect = "id,subject,start,end,location,organizer,attendees,isAllDay,onlineMeetingUrl"
-
 func newCalListCmd() *cobra.Command {
 	var mailbox, start, end string
 	var max int
@@ -40,14 +35,11 @@ func newCalListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var suffix string
-			if start != "" && end != "" {
-				suffix = fmt.Sprintf("calendarView?startDateTime=%s&endDateTime=%s&$top=%d&$select=%s&$orderby=start/dateTime",
-					url.QueryEscape(start), url.QueryEscape(end), max, eventSelect)
-			} else {
-				suffix = fmt.Sprintf("events?$top=%d&$orderby=start/dateTime&$select=%s", max, eventSelect)
+			data, err := client.Calendar().List(cmd.Context(), mbx, backend.CalListOpts{Start: start, End: end, Max: max})
+			if err != nil {
+				return err
 			}
-			return emitGraphValue(cmd.Context(), client, mbx, suffix)
+			return emitData(data)
 		},
 	}
 	cmd.Flags().StringVar(&mailbox, "mailbox", "", "mailbox to operate on (defaults to default_mailbox)")
@@ -68,11 +60,11 @@ func newCalGetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			body, err := client.GetForMailbox(cmd.Context(), mbx, "events/"+url.PathEscape(args[0])+"?$select="+eventSelect+",body")
+			data, err := client.Calendar().Get(cmd.Context(), mbx, args[0])
 			if err != nil {
 				return err
 			}
-			return output.WriteJSON(os.Stdout, json.RawMessage(body))
+			return emitData(data)
 		},
 	}
 	cmd.Flags().StringVar(&mailbox, "mailbox", "", "mailbox to operate on (defaults to default_mailbox)")
@@ -94,15 +86,11 @@ func newCalCreateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			payload, err := calendar.BuildEvent(ev)
+			data, err := client.Calendar().Create(cmd.Context(), mbx, ev)
 			if err != nil {
 				return err
 			}
-			body, err := client.PostForMailbox(cmd.Context(), mbx, "events", payload)
-			if err != nil {
-				return err
-			}
-			return output.WriteJSON(os.Stdout, json.RawMessage(body))
+			return emitData(data)
 		},
 	}
 	addEventFlags(cmd, &mailbox, &subject, &start, &end, &tz, &location, &bodyFile, &attendees)
@@ -129,18 +117,15 @@ func newCalUpdateCmd() *cobra.Command {
 				}
 				body = string(b)
 			}
-			payload, err := calendar.BuildEventPatch(calendar.Event{
+			ev := calendar.Event{
 				Subject: subject, Body: body, Start: start, End: end,
 				TimeZone: tz, Location: location, Attendees: attendees,
-			})
+			}
+			data, err := client.Calendar().Update(cmd.Context(), mbx, args[0], ev)
 			if err != nil {
 				return err
 			}
-			resp, err := client.PatchForMailbox(cmd.Context(), mbx, "events/"+url.PathEscape(args[0]), payload)
-			if err != nil {
-				return err
-			}
-			return output.WriteJSON(os.Stdout, json.RawMessage(resp))
+			return emitData(data)
 		},
 	}
 	addEventFlags(cmd, &mailbox, &subject, &start, &end, &tz, &location, &bodyFile, &attendees)
@@ -158,7 +143,7 @@ func newCalDeleteCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := client.DeleteForMailbox(cmd.Context(), mbx, "events/"+url.PathEscape(args[0])); err != nil {
+			if err := client.Calendar().Delete(cmd.Context(), mbx, args[0]); err != nil {
 				return err
 			}
 			return output.WriteJSON(os.Stdout, map[string]any{"deleted": true, "id": args[0], "mailbox": mbx})
@@ -180,11 +165,13 @@ func newCalFreeBusyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			payload, err := calendar.BuildGetSchedule(schedules, start, end, tz, interval)
+			data, err := client.Calendar().FreeBusy(cmd.Context(), mbx, backend.ScheduleQuery{
+				Schedules: schedules, Start: start, End: end, TimeZone: tz, Interval: interval,
+			})
 			if err != nil {
 				return err
 			}
-			return postAndEmitValue(cmd.Context(), client, mbx, "calendar/getSchedule", payload)
+			return emitData(data)
 		},
 	}
 	cmd.Flags().StringVar(&mailbox, "mailbox", "", "mailbox whose calendar issues the query (defaults to default_mailbox)")
@@ -208,15 +195,13 @@ func newCalFindTimesCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			payload, err := calendar.BuildFindMeetingTimes(attendees, start, end, tz, duration, max)
+			data, err := client.Calendar().FindTimes(cmd.Context(), mbx, backend.FindTimesQuery{
+				Attendees: attendees, Start: start, End: end, TimeZone: tz, Duration: duration, Max: max,
+			})
 			if err != nil {
 				return err
 			}
-			body, err := client.PostForMailbox(cmd.Context(), mbx, "findMeetingTimes", payload)
-			if err != nil {
-				return err
-			}
-			return output.WriteJSON(os.Stdout, json.RawMessage(body))
+			return emitData(data)
 		},
 	}
 	cmd.Flags().StringVar(&mailbox, "mailbox", "", "organizing mailbox (defaults to default_mailbox)")
@@ -255,18 +240,4 @@ func eventFromFlags(subject, start, end, tz, location, bodyFile string, attendee
 		Subject: subject, Body: body, Start: start, End: end,
 		TimeZone: tz, Location: location, Attendees: attendees,
 	}, nil
-}
-
-func postAndEmitValue(ctx context.Context, client *graph.Client, mbx, suffix string, payload []byte) error {
-	body, err := client.PostForMailbox(ctx, mbx, suffix, payload)
-	if err != nil {
-		return err
-	}
-	var page struct {
-		Value json.RawMessage `json:"value"`
-	}
-	if err := json.Unmarshal(body, &page); err != nil {
-		return fmt.Errorf("parse Graph response: %w", err)
-	}
-	return output.WriteJSON(os.Stdout, json.RawMessage(page.Value))
 }
