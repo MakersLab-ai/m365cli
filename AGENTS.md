@@ -4,7 +4,14 @@
 
 - `cmd/m365/`: CLI entrypoint (`main.go`).
 - `internal/cli/`: command wiring (one file per domain: `mail`, `calendar`,
-  `contacts`, `drive`, `sp`, `doctor`). Thin glue — no business logic.
+  `contacts`, `drive`, `sp`, `doctor`). Thin glue — no business logic; commands
+  talk only to the `internal/backend` seam, never to a transport directly.
+- `internal/backend/`: the transport-agnostic seam — per-domain service
+  interfaces (`MailService`, `CalendarService`, ...) the CLI depends on. The
+  `backend` config field selects an implementation (`graph` default, `ews`
+  planned for on-premise Exchange).
+- `internal/backend/graph/`: the Microsoft Graph implementation of the seam
+  (REST suffixes, `$select`, the `{value}` unwrap) — composes `internal/graph`.
 - `internal/config/`: config loading + the fail-closed allowlist matcher.
 - `internal/auth/`: app-only certificate auth (MSAL) + 0600 token cache.
 - `internal/graph/`: the scoped Graph REST client — the single choke point that

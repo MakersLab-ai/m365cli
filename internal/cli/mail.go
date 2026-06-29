@@ -4,14 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/MakersLab-ai/m365cli/internal/backend"
 	"github.com/MakersLab-ai/m365cli/internal/config"
-	"github.com/MakersLab-ai/m365cli/internal/graph"
 	"github.com/MakersLab-ai/m365cli/internal/mail"
 	"github.com/MakersLab-ai/m365cli/internal/output"
 )
@@ -31,8 +30,8 @@ func newMailCmd() *cobra.Command {
 }
 
 // mailContext loads config, resolves the mailbox (--mailbox or default_mailbox),
-// and builds a Graph client. The allowlist is enforced again inside the client.
-func mailContext(mailbox string) (*config.Config, *graph.Client, string, error) {
+// and builds the backend. The allowlist is enforced again inside the backend.
+func mailContext(mailbox string) (*config.Config, backend.Backend, string, error) {
 	cfg, err := loadConfig()
 	if err != nil {
 		return nil, nil, "", err
@@ -44,11 +43,16 @@ func mailContext(mailbox string) (*config.Config, *graph.Client, string, error) 
 	if mbx == "" {
 		return nil, nil, "", fmt.Errorf("no mailbox given (use --mailbox or set default_mailbox)")
 	}
-	client, err := newGraphClient(cfg)
+	be, err := newBackend(cfg)
 	if err != nil {
 		return nil, nil, "", err
 	}
-	return cfg, client, mbx, nil
+	return cfg, be, mbx, nil
+}
+
+// emitData renders a backend JSON document as the stable stdout envelope.
+func emitData(body []byte) error {
+	return output.WriteJSON(os.Stdout, json.RawMessage(body))
 }
 
 func newMailListCmd() *cobra.Command {
@@ -62,8 +66,11 @@ func newMailListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			suffix := fmt.Sprintf("messages?$top=%d&$select=id,subject,from,receivedDateTime,isRead", max)
-			return emitGraphValue(cmd.Context(), client, mbx, suffix)
+			data, err := client.Mail().List(cmd.Context(), mbx, backend.ListOpts{Max: max})
+			if err != nil {
+				return err
+			}
+			return emitData(data)
 		},
 	}
 	cmd.Flags().StringVar(&mailbox, "mailbox", "", "mailbox to operate on (defaults to default_mailbox)")
@@ -82,13 +89,11 @@ func newMailReadCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			suffix := "messages/" + url.PathEscape(args[0]) +
-				"?$select=id,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,body"
-			body, err := client.GetForMailbox(cmd.Context(), mbx, suffix)
+			data, err := client.Mail().Read(cmd.Context(), mbx, args[0])
 			if err != nil {
 				return err
 			}
-			return output.WriteJSON(os.Stdout, json.RawMessage(body))
+			return emitData(data)
 		},
 	}
 	cmd.Flags().StringVar(&mailbox, "mailbox", "", "mailbox to operate on (defaults to default_mailbox)")
@@ -107,10 +112,11 @@ func newMailSearchCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Graph $search requires the value to be a quoted string.
-			q := url.QueryEscape(`"` + args[0] + `"`)
-			suffix := fmt.Sprintf("messages?$search=%s&$top=%d&$select=id,subject,from,receivedDateTime,isRead", q, max)
-			return emitGraphValue(cmd.Context(), client, mbx, suffix)
+			data, err := client.Mail().Search(cmd.Context(), mbx, backend.SearchOpts{Query: args[0], Max: max})
+			if err != nil {
+				return err
+			}
+			return emitData(data)
 		},
 	}
 	cmd.Flags().StringVar(&mailbox, "mailbox", "", "mailbox to operate on (defaults to default_mailbox)")
@@ -141,11 +147,7 @@ func newMailSendCmd() *cobra.Command {
 				return createDraft(cmd.Context(), client, mbx, msg, plan.Blocked)
 			}
 
-			payload, err := mail.BuildSendMail(msg)
-			if err != nil {
-				return err
-			}
-			if _, err := client.PostForMailbox(cmd.Context(), mbx, "sendMail", payload); err != nil {
+			if err := client.Mail().Send(cmd.Context(), mbx, msg); err != nil {
 				return err
 			}
 			return output.WriteJSON(os.Stdout, map[string]any{"sent": true, "mailbox": mbx, "to": msg.To})
@@ -205,23 +207,15 @@ func composeMessage(subject, bodyFile string, to []string, cc string) (mail.Mess
 	return mail.Message{Subject: subject, Body: string(body), To: to, Cc: ccList}, nil
 }
 
-func createDraft(ctx context.Context, client *graph.Client, mbx string, msg mail.Message, blocked []string) error {
-	payload, err := mail.BuildMessage(msg)
+func createDraft(ctx context.Context, client backend.Backend, mbx string, msg mail.Message, blocked []string) error {
+	id, err := client.Mail().CreateDraft(ctx, mbx, msg)
 	if err != nil {
 		return err
 	}
-	body, err := client.PostForMailbox(ctx, mbx, "messages", payload)
-	if err != nil {
-		return err
-	}
-	var created struct {
-		ID string `json:"id"`
-	}
-	_ = json.Unmarshal(body, &created)
 	return output.WriteJSON(os.Stdout, map[string]any{
 		"sent":        false,
 		"draft":       true,
-		"draft_id":    created.ID,
+		"draft_id":    id,
 		"mailbox":     mbx,
 		"blocked":     blocked,
 		"draftReason": draftReason(blocked),
@@ -233,20 +227,6 @@ func draftReason(blocked []string) string {
 		return "draft requested"
 	}
 	return "recipients outside send_allow"
-}
-
-func emitGraphValue(ctx context.Context, client *graph.Client, mbx, suffix string) error {
-	body, err := client.GetForMailbox(ctx, mbx, suffix)
-	if err != nil {
-		return err
-	}
-	var page struct {
-		Value json.RawMessage `json:"value"`
-	}
-	if err := json.Unmarshal(body, &page); err != nil {
-		return fmt.Errorf("parse Graph response: %w", err)
-	}
-	return output.WriteJSON(os.Stdout, json.RawMessage(page.Value))
 }
 
 func splitComma(s string) []string {

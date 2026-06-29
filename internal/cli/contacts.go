@@ -1,15 +1,10 @@
 package cli
 
 import (
-	"encoding/json"
-	"fmt"
-	"net/url"
-	"os"
-
 	"github.com/spf13/cobra"
 
+	"github.com/MakersLab-ai/m365cli/internal/backend"
 	"github.com/MakersLab-ai/m365cli/internal/contacts"
-	"github.com/MakersLab-ai/m365cli/internal/output"
 )
 
 // newContactsCmd is the contacts domain root (mailbox-scoped, same RBAC as mail).
@@ -22,8 +17,6 @@ func newContactsCmd() *cobra.Command {
 	return c
 }
 
-const contactSelect = "id,displayName,givenName,surname,emailAddresses,mobilePhone,businessPhones"
-
 func newContactsListCmd() *cobra.Command {
 	var mailbox string
 	var max int
@@ -35,8 +28,11 @@ func newContactsListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			suffix := fmt.Sprintf("contacts?$top=%d&$select=%s", max, contactSelect)
-			return emitGraphValue(cmd.Context(), client, mbx, suffix)
+			data, err := client.Contacts().List(cmd.Context(), mbx, backend.ListOpts{Max: max})
+			if err != nil {
+				return err
+			}
+			return emitData(data)
 		},
 	}
 	cmd.Flags().StringVar(&mailbox, "mailbox", "", "mailbox to operate on (defaults to default_mailbox)")
@@ -55,11 +51,11 @@ func newContactsGetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			body, err := client.GetForMailbox(cmd.Context(), mbx, "contacts/"+url.PathEscape(args[0])+"?$select="+contactSelect)
+			data, err := client.Contacts().Get(cmd.Context(), mbx, args[0])
 			if err != nil {
 				return err
 			}
-			return output.WriteJSON(os.Stdout, json.RawMessage(body))
+			return emitData(data)
 		},
 	}
 	cmd.Flags().StringVar(&mailbox, "mailbox", "", "mailbox to operate on (defaults to default_mailbox)")
@@ -77,17 +73,13 @@ func newContactsAddCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			payload, err := contacts.BuildContact(contacts.Contact{
+			data, err := client.Contacts().Add(cmd.Context(), mbx, contacts.Contact{
 				GivenName: given, Surname: surname, DisplayName: display, Emails: emails,
 			})
 			if err != nil {
 				return err
 			}
-			body, err := client.PostForMailbox(cmd.Context(), mbx, "contacts", payload)
-			if err != nil {
-				return err
-			}
-			return output.WriteJSON(os.Stdout, json.RawMessage(body))
+			return emitData(data)
 		},
 	}
 	cmd.Flags().StringVar(&mailbox, "mailbox", "", "mailbox to operate on (defaults to default_mailbox)")
