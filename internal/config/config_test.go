@@ -81,14 +81,29 @@ func TestValidateAcceptsCompleteConfig(t *testing.T) {
 }
 
 func TestValidateBackendField(t *testing.T) {
-	for _, b := range []string{"", "graph", "ews"} {
+	// graph (and the empty default) require the cloud auth triple.
+	for _, b := range []string{"", "graph"} {
 		cfg := Config{Backend: b, TenantID: "t", ClientID: "c", CertPath: "p"}
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("Validate(backend=%q): unexpected error: %v", b, err)
 		}
 	}
-	cfg := Config{Backend: "imap", TenantID: "t", ClientID: "c", CertPath: "p"}
-	if err := cfg.Validate(); err == nil {
+	// ews requires the EWS triple, NOT the cloud one.
+	ews := Config{Backend: "ews", EWSURL: "https://m/EWS/Exchange.asmx", EWSUser: "D\\u", EWSPasswordFile: "/p"}
+	if err := ews.Validate(); err != nil {
+		t.Errorf("Validate(ews complete): unexpected error: %v", err)
+	}
+	for name, cfg := range map[string]Config{
+		"ews missing url":      {Backend: "ews", EWSUser: "D\\u", EWSPasswordFile: "/p"},
+		"ews missing user":     {Backend: "ews", EWSURL: "https://m", EWSPasswordFile: "/p"},
+		"ews missing pwd file": {Backend: "ews", EWSURL: "https://m", EWSUser: "D\\u"},
+	} {
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("Validate(%s): expected error, got nil", name)
+		}
+	}
+	unknown := Config{Backend: "imap", TenantID: "t", ClientID: "c", CertPath: "p"}
+	if err := unknown.Validate(); err == nil {
 		t.Error("Validate: expected error for unknown backend")
 	}
 }

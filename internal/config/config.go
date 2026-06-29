@@ -21,12 +21,17 @@ import (
 // Empty lists fail closed (deny all).
 type Config struct {
 	// Backend selects the transport: "graph" (default, Microsoft 365 cloud) or
-	// "ews" (on-premise Exchange — accepted but not yet implemented). Empty is
-	// treated as "graph".
-	Backend          string   `toml:"backend"`
-	TenantID         string   `toml:"tenant_id"`
-	ClientID         string   `toml:"client_id"`
-	CertPath         string   `toml:"cert_path"`
+	// "ews" (on-premise Exchange). Empty is treated as "graph".
+	Backend  string `toml:"backend"`
+	TenantID string `toml:"tenant_id"`
+	ClientID string `toml:"client_id"`
+	CertPath string `toml:"cert_path"`
+	// EWS (on-premise Exchange) transport — used only when Backend == "ews".
+	// EWSUser is the NTLM service account ("DOMAIN\\user" or UPN); the password
+	// is read from EWSPasswordFile (a 0600 file), never from config or argv.
+	EWSURL           string   `toml:"ews_url"`
+	EWSUser          string   `toml:"ews_user"`
+	EWSPasswordFile  string   `toml:"ews_password_file"`
 	DefaultMailbox   string   `toml:"default_mailbox"`
 	AllowedMailboxes []string `toml:"allowed_mailboxes"`
 	AllowedSites     []string `toml:"allowed_sites"`
@@ -54,19 +59,28 @@ func Load(path string) (*Config, error) {
 // default_mailbox is itself within the mailbox allowlist.
 func (c *Config) Validate() error {
 	switch c.Backend {
-	case "", "graph", "ews":
-		// known
+	case "", "graph":
+		if strings.TrimSpace(c.TenantID) == "" {
+			return fmt.Errorf("config: tenant_id is required")
+		}
+		if strings.TrimSpace(c.ClientID) == "" {
+			return fmt.Errorf("config: client_id is required")
+		}
+		if strings.TrimSpace(c.CertPath) == "" {
+			return fmt.Errorf("config: cert_path is required")
+		}
+	case "ews":
+		if strings.TrimSpace(c.EWSURL) == "" {
+			return fmt.Errorf("config: ews_url is required for backend \"ews\"")
+		}
+		if strings.TrimSpace(c.EWSUser) == "" {
+			return fmt.Errorf("config: ews_user is required for backend \"ews\"")
+		}
+		if strings.TrimSpace(c.EWSPasswordFile) == "" {
+			return fmt.Errorf("config: ews_password_file is required for backend \"ews\"")
+		}
 	default:
 		return fmt.Errorf("config: unknown backend %q (want \"graph\" or \"ews\")", c.Backend)
-	}
-	if strings.TrimSpace(c.TenantID) == "" {
-		return fmt.Errorf("config: tenant_id is required")
-	}
-	if strings.TrimSpace(c.ClientID) == "" {
-		return fmt.Errorf("config: client_id is required")
-	}
-	if strings.TrimSpace(c.CertPath) == "" {
-		return fmt.Errorf("config: cert_path is required")
 	}
 	if c.DefaultMailbox != "" && len(c.AllowedMailboxes) > 0 && !c.IsMailboxAllowed(c.DefaultMailbox) {
 		return fmt.Errorf("config: default_mailbox %q is not in allowed_mailboxes", c.DefaultMailbox)
