@@ -22,14 +22,15 @@ type Body struct {
 // Item is a neutral message, independent of EWS XML or Graph JSON. The backend
 // maps it to the JSON output contract.
 type Item struct {
-	ID       string
-	Subject  string
-	From     Address
-	To       []Address
-	Cc       []Address
-	Received string
-	IsRead   bool
-	Body     *Body // nil unless fetched (GetItem)
+	ID             string
+	Subject        string
+	From           Address
+	To             []Address
+	Cc             []Address
+	Received       string
+	IsRead         bool
+	ConversationID string
+	Body           *Body // nil unless fetched (GetItem)
 }
 
 // --- response parse structs (matched by local name; EWS namespaces ignored) ---
@@ -37,10 +38,14 @@ type Item struct {
 type envelope struct {
 	XMLName xml.Name
 	Body    struct {
-		Fault              *soapFault          `xml:"Fault"`
-		FindItemResponse   *findItemResponse   `xml:"FindItemResponse"`
-		GetItemResponse    *getItemResponse    `xml:"GetItemResponse"`
-		CreateItemResponse *createItemResponse `xml:"CreateItemResponse"`
+		Fault                 *soapFault             `xml:"Fault"`
+		FindItemResponse      *findItemResponse      `xml:"FindItemResponse"`
+		GetItemResponse       *getItemResponse       `xml:"GetItemResponse"`
+		CreateItemResponse    *createItemResponse    `xml:"CreateItemResponse"`
+		UpdateItemResponse    *updateItemResponse    `xml:"UpdateItemResponse"`
+		DeleteItemResponse    *simpleItemResponse    `xml:"DeleteItemResponse"`
+		GetAttachmentResponse *getAttachmentResponse `xml:"GetAttachmentResponse"`
+		SyncResponse          *syncResponse          `xml:"SyncFolderItemsResponse"`
 	} `xml:"Body"`
 }
 
@@ -58,10 +63,11 @@ type findItemResponse struct {
 }
 
 type findResponseMessage struct {
-	ResponseClass string       `xml:"ResponseClass,attr"`
-	ResponseCode  string       `xml:"ResponseCode"`
-	MessageText   string       `xml:"MessageText"`
-	Items         []xmlMessage `xml:"RootFolder>Items>Message"`
+	ResponseClass string            `xml:"ResponseClass,attr"`
+	ResponseCode  string            `xml:"ResponseCode"`
+	MessageText   string            `xml:"MessageText"`
+	Items         []xmlMessage      `xml:"RootFolder>Items>Message"`
+	CalEvents     []xmlCalendarItem `xml:"RootFolder>Items>CalendarItem"`
 }
 
 type getItemResponse struct {
@@ -69,10 +75,11 @@ type getItemResponse struct {
 }
 
 type getResponseMessage struct {
-	ResponseClass string       `xml:"ResponseClass,attr"`
-	ResponseCode  string       `xml:"ResponseCode"`
-	MessageText   string       `xml:"MessageText"`
-	Items         []xmlMessage `xml:"Items>Message"`
+	ResponseClass string            `xml:"ResponseClass,attr"`
+	ResponseCode  string            `xml:"ResponseCode"`
+	MessageText   string            `xml:"MessageText"`
+	Items         []xmlMessage      `xml:"Items>Message"`
+	CalEvents     []xmlCalendarItem `xml:"Items>CalendarItem"`
 }
 
 type xmlMessage struct {
@@ -80,13 +87,33 @@ type xmlMessage struct {
 		ID        string `xml:"Id,attr"`
 		ChangeKey string `xml:"ChangeKey,attr"`
 	} `xml:"ItemId"`
-	Subject          string       `xml:"Subject"`
-	DateTimeReceived string       `xml:"DateTimeReceived"`
-	From             xmlMailboxes `xml:"From"`
-	ToRecipients     []xmlMailbox `xml:"ToRecipients>Mailbox"`
-	CcRecipients     []xmlMailbox `xml:"CcRecipients>Mailbox"`
-	IsRead           bool         `xml:"IsRead"`
-	Body             *xmlBody     `xml:"Body"`
+	Subject          string          `xml:"Subject"`
+	DateTimeReceived string          `xml:"DateTimeReceived"`
+	From             xmlMailboxes    `xml:"From"`
+	ToRecipients     []xmlMailbox    `xml:"ToRecipients>Mailbox"`
+	CcRecipients     []xmlMailbox    `xml:"CcRecipients>Mailbox"`
+	IsRead           bool            `xml:"IsRead"`
+	Body             *xmlBody        `xml:"Body"`
+	ConversationID   xmlIDAttr       `xml:"ConversationId"`
+	Attachments      *xmlAttachments `xml:"Attachments"`
+}
+
+// xmlIDAttr is an empty element carrying an Id attribute (ItemId, ConversationId).
+type xmlIDAttr struct {
+	ID string `xml:"Id,attr"`
+}
+
+type xmlAttachments struct {
+	File []xmlFileAttachment `xml:"FileAttachment"`
+	Item []xmlFileAttachment `xml:"ItemAttachment"`
+}
+
+type xmlFileAttachment struct {
+	ID          xmlIDAttr `xml:"AttachmentId"`
+	Name        string    `xml:"Name"`
+	ContentType string    `xml:"ContentType"`
+	Size        int64     `xml:"Size"`
+	Content     string    `xml:"Content"` // base64, only populated by GetAttachment
 }
 
 type xmlMailboxes struct {
@@ -118,13 +145,14 @@ func mailboxes(in []xmlMailbox) []Address {
 
 func (m xmlMessage) toItem() Item {
 	it := Item{
-		ID:       m.ItemID.ID,
-		Subject:  m.Subject,
-		From:     m.From.Mailbox.addr(),
-		To:       mailboxes(m.ToRecipients),
-		Cc:       mailboxes(m.CcRecipients),
-		Received: m.DateTimeReceived,
-		IsRead:   m.IsRead,
+		ID:             m.ItemID.ID,
+		Subject:        m.Subject,
+		From:           m.From.Mailbox.addr(),
+		To:             mailboxes(m.ToRecipients),
+		Cc:             mailboxes(m.CcRecipients),
+		Received:       m.DateTimeReceived,
+		IsRead:         m.IsRead,
+		ConversationID: m.ConversationID.ID,
 	}
 	if m.Body != nil {
 		it.Body = &Body{Type: m.Body.Type, Content: m.Body.Content}

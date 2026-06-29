@@ -22,10 +22,11 @@ type createItemResponse struct {
 }
 
 type createResponseMessage struct {
-	ResponseClass string       `xml:"ResponseClass,attr"`
-	ResponseCode  string       `xml:"ResponseCode"`
-	MessageText   string       `xml:"MessageText"`
-	Items         []xmlMessage `xml:"Items>Message"`
+	ResponseClass string            `xml:"ResponseClass,attr"`
+	ResponseCode  string            `xml:"ResponseCode"`
+	MessageText   string            `xml:"MessageText"`
+	Items         []xmlMessage      `xml:"Items>Message"`
+	CalEvents     []xmlCalendarItem `xml:"Items>CalendarItem"`
 }
 
 // SendMessage creates and sends a message as the (impersonated) mailbox,
