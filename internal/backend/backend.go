@@ -19,11 +19,17 @@ package backend
 
 import (
 	"context"
+	"errors"
 
 	"github.com/MakersLab-ai/m365cli/internal/calendar"
 	"github.com/MakersLab-ai/m365cli/internal/contacts"
 	"github.com/MakersLab-ai/m365cli/internal/mail"
 )
+
+// ErrUnsupported is returned by a backend for an operation it does not implement
+// (e.g. the EWS backend before a capability is built out). It reads as a clear
+// "not supported by this backend".
+var ErrUnsupported = errors.New("operation not supported by this backend")
 
 // Backend is the capability aggregate a CLI command resolves once per
 // invocation. Every sub-service is mailbox- or site-scoped through the same
