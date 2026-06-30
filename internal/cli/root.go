@@ -25,9 +25,15 @@ var flags globalFlags
 // NewRootCmd builds the root command tree.
 func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:           "m365",
-		Short:         "m365 — the gog-style CLI alternative for Microsoft 365 (app-only Graph)",
-		Long:          "m365 is a single static binary for Microsoft 365 / Graph automation,\nbuilt for terminals, scripts, CI, and coding agents. App-only auth (no login),\nscoped by hard allowlists. Made by makerslab.ai.",
+		Use:   "m365",
+		Short: "m365 — the gog-style CLI for Microsoft 365 (cloud) and on-premise Exchange",
+		Long: "m365 is a single static binary for mail, calendar and files against\n" +
+			"Microsoft 365 (Graph, cloud) or an on-premise Exchange server (EWS),\n" +
+			"built for terminals, scripts, CI, and coding agents. Scoped by hard\n" +
+			"allowlists. Made by makerslab.ai.\n\n" +
+			"Independent project, not affiliated with or endorsed by Microsoft.\n" +
+			"\"Microsoft\" and \"Microsoft 365\" are trademarks of the Microsoft group\n" +
+			"of companies.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
