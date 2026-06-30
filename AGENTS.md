@@ -13,8 +13,10 @@
 - `internal/backend/graph/`: the Microsoft Graph implementation of the seam
   (REST suffixes, `$select`, the `{value}` unwrap) — composes `internal/graph`.
 - `internal/backend/ews/`: the on-premise Exchange (EWS) implementation —
-  composes `internal/ews` and maps EWS Items to the same Graph-shaped JSON the
-  graph backend emits. Currently covers mail list/read.
+  composes `internal/ews` and maps EWS items to the same Graph-shaped JSON the
+  graph backend emits. Covers mail (incl. reply/attachments), calendar CRUD and
+  `mail watch` (SyncFolderItems rendered as a Graph delta); freebusy/find-times,
+  contacts and drive/SharePoint are out of scope (see docs/ews-setup.md).
 - `internal/config/`: config loading + the fail-closed allowlist matcher.
 - `internal/auth/`: app-only certificate auth (MSAL) + 0600 token cache.
 - `internal/graph/`: the scoped Graph REST client — the Graph-side choke point

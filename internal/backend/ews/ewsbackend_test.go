@@ -123,13 +123,92 @@ func TestMailSearchEmitsGraphShape(t *testing.T) {
 func TestUnimplementedReturnErrUnsupported(t *testing.T) {
 	be := newBackend(t, findItemSuccess)
 	ctx := context.Background()
-	if _, err := be.Calendar().List(ctx, mbx, backend.CalListOpts{}); !errors.Is(err, backend.ErrUnsupported) {
-		t.Errorf("Calendar.List: want ErrUnsupported, got %v", err)
+	// Deferred/cloud-only surfaces still report ErrUnsupported.
+	if _, err := be.Calendar().FreeBusy(ctx, mbx, backend.ScheduleQuery{}); !errors.Is(err, backend.ErrUnsupported) {
+		t.Errorf("Calendar.FreeBusy: want ErrUnsupported, got %v", err)
 	}
-	if err := be.Mail().Reply(ctx, mbx, "id", "body", false); !errors.Is(err, backend.ErrUnsupported) {
-		t.Errorf("Mail.Reply: want ErrUnsupported, got %v", err)
+	if _, err := be.Contacts().List(ctx, mbx, backend.ListOpts{}); !errors.Is(err, backend.ErrUnsupported) {
+		t.Errorf("Contacts.List: want ErrUnsupported, got %v", err)
 	}
-	if _, err := be.Mail().Attachments(ctx, mbx, "id"); !errors.Is(err, backend.ErrUnsupported) {
-		t.Errorf("Mail.Attachments: want ErrUnsupported, got %v", err)
+	if _, err := be.Drive().List(ctx, mbx, ""); !errors.Is(err, backend.ErrUnsupported) {
+		t.Errorf("Drive.List: want ErrUnsupported, got %v", err)
+	}
+	if _, err := be.Sites().Search(ctx, "q"); !errors.Is(err, backend.ErrUnsupported) {
+		t.Errorf("Sites.Search: want ErrUnsupported, got %v", err)
+	}
+}
+
+const calListSuccess = `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body>
+ <m:FindItemResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+   xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><m:ResponseMessages>
+  <m:FindItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode>
+   <m:RootFolder TotalItemsInView="1" IncludesLastItemInRange="true"><t:Items>
+    <t:CalendarItem><t:ItemId Id="EV-1" ChangeKey="DW=="/><t:Subject>Planning</t:Subject>
+     <t:Start>2026-06-30T14:00:00Z</t:Start><t:End>2026-06-30T15:00:00Z</t:End>
+     <t:Location>Room 7</t:Location><t:IsAllDayEvent>false</t:IsAllDayEvent>
+     <t:Organizer><t:Mailbox><t:Name>Jane</t:Name></t:Mailbox></t:Organizer></t:CalendarItem>
+   </t:Items></m:RootFolder></m:FindItemResponseMessage></m:ResponseMessages></m:FindItemResponse></soap:Body></soap:Envelope>`
+
+func TestCalendarListEmitsGraphShape(t *testing.T) {
+	be := newBackend(t, calListSuccess)
+	got, err := be.Calendar().List(context.Background(), mbx, backend.CalListOpts{Start: "2026-06-29T00:00:00Z", End: "2026-07-06T00:00:00Z", Max: 100})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := `[{"id":"EV-1","subject":"Planning","start":{"dateTime":"2026-06-30T14:00:00Z","timeZone":"UTC"},` +
+		`"end":{"dateTime":"2026-06-30T15:00:00Z","timeZone":"UTC"},"location":{"displayName":"Room 7"},` +
+		`"organizer":{"emailAddress":{"name":"Jane","address":""}},"attendees":[],"isAllDay":false}]`
+	if string(got) != want {
+		t.Errorf("calendar List JSON mismatch\n got: %s\nwant: %s", got, want)
+	}
+}
+
+const syncSuccess = `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body>
+ <m:SyncFolderItemsResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+   xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><m:ResponseMessages>
+  <m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode>
+   <m:SyncState>STATE-2</m:SyncState><m:IncludesLastItemInRange>true</m:IncludesLastItemInRange>
+   <m:Changes>
+    <t:Create><t:Message><t:ItemId Id="N-1" ChangeKey="CQ=="/><t:Subject>Budget</t:Subject>
+     <t:DateTimeReceived>2026-06-29T09:14:22Z</t:DateTimeReceived><t:ConversationId Id="CONV-1"/>
+     <t:From><t:Mailbox><t:Name>Dan</t:Name><t:EmailAddress>dan@x.com</t:EmailAddress></t:Mailbox></t:From>
+     <t:IsRead>false</t:IsRead></t:Message></t:Create>
+    <t:Delete><t:ItemId Id="OLD-9" ChangeKey="CK"/></t:Delete>
+   </m:Changes></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse></soap:Body></soap:Envelope>`
+
+func TestMailboxDeltaEmitsGraphDelta(t *testing.T) {
+	be := newBackend(t, syncSuccess)
+	// First-run cursor is the watch package's hardcoded suffix.
+	got, err := be.Mail().MailboxDelta(context.Background(), mbx, "mailFolders/inbox/messages/delta?$select=id")
+	if err != nil {
+		t.Fatalf("MailboxDelta: %v", err)
+	}
+	want := `{"@odata.deltaLink":"STATE-2","value":[` +
+		`{"id":"N-1","conversationId":"CONV-1","subject":"Budget","bodyPreview":"","receivedDateTime":"2026-06-29T09:14:22Z","isRead":false,"from":{"emailAddress":{"name":"Dan","address":"dan@x.com"}},"toRecipients":[],"body":{"content":""}},` +
+		`{"@removed":{"reason":"deleted"},"id":"OLD-9"}` +
+		`]}`
+	if string(got) != want {
+		t.Errorf("watch delta JSON mismatch\n got: %s\nwant: %s", got, want)
+	}
+}
+
+const getItemAttachmentsSuccess = `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body>
+ <m:GetItemResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+   xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><m:ResponseMessages>
+  <m:GetItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items>
+   <t:Message><t:ItemId Id="MID" ChangeKey="CQ=="/><t:Attachments>
+    <t:FileAttachment><t:AttachmentId Id="ATT-1"/><t:Name>invoice.pdf</t:Name>
+     <t:ContentType>application/pdf</t:ContentType><t:Size>48213</t:Size></t:FileAttachment>
+   </t:Attachments></t:Message></m:Items></m:GetItemResponseMessage></m:ResponseMessages></m:GetItemResponse></soap:Body></soap:Envelope>`
+
+func TestAttachmentsEmitsGraphShape(t *testing.T) {
+	be := newBackend(t, getItemAttachmentsSuccess)
+	got, err := be.Mail().Attachments(context.Background(), mbx, "MID")
+	if err != nil {
+		t.Fatalf("Attachments: %v", err)
+	}
+	want := `[{"id":"ATT-1","name":"invoice.pdf","contentType":"application/pdf","size":48213}]`
+	if string(got) != want {
+		t.Errorf("attachments JSON mismatch\n got: %s\nwant: %s", got, want)
 	}
 }

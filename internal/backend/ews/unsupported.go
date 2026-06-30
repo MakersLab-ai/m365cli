@@ -4,35 +4,13 @@ import (
 	"context"
 
 	"github.com/MakersLab-ai/m365cli/internal/backend"
-	"github.com/MakersLab-ai/m365cli/internal/calendar"
 	"github.com/MakersLab-ai/m365cli/internal/contacts"
 )
 
-// The calendar, contacts, drive and site domains are not yet implemented for
-// EWS. Each method returns backend.ErrUnsupported so the CLI fails with a clear
-// message rather than a nil-pointer panic.
-
-type calSvc struct{}
-
-func (calSvc) List(context.Context, string, backend.CalListOpts) ([]byte, error) {
-	return nil, backend.ErrUnsupported
-}
-func (calSvc) Get(context.Context, string, string) ([]byte, error) {
-	return nil, backend.ErrUnsupported
-}
-func (calSvc) Create(context.Context, string, calendar.Event) ([]byte, error) {
-	return nil, backend.ErrUnsupported
-}
-func (calSvc) Update(context.Context, string, string, calendar.Event) ([]byte, error) {
-	return nil, backend.ErrUnsupported
-}
-func (calSvc) Delete(context.Context, string, string) error { return backend.ErrUnsupported }
-func (calSvc) FreeBusy(context.Context, string, backend.ScheduleQuery) ([]byte, error) {
-	return nil, backend.ErrUnsupported
-}
-func (calSvc) FindTimes(context.Context, string, backend.FindTimesQuery) ([]byte, error) {
-	return nil, backend.ErrUnsupported
-}
+// The contacts, drive and site domains are not implemented for EWS. Contacts is
+// out of the mail+calendar scope; drive/SharePoint are cloud-only surfaces that
+// do not exist on an on-premise Exchange server. Each method returns
+// backend.ErrUnsupported so the CLI fails with a clear message.
 
 type contactSvc struct{}
 
