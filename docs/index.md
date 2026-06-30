@@ -45,3 +45,9 @@ Run `m365 <domain> --help` or `m365 <domain> <verb> --help` for flags.
   for human review, unless `send_unrestricted` is set (which `doctor` flags).
 - **Output contract.** `--json` writes a stable envelope to stdout; human hints
   go to stderr.
+
+## Disclaimer & trademarks
+
+Independent, third-party project — **not** affiliated with, endorsed by, or
+sponsored by Microsoft. "Microsoft" and "Microsoft 365" are trademarks of the
+Microsoft group of companies, used here only to describe interoperability.
