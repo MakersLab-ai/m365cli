@@ -1,9 +1,9 @@
 # m365
 
 **The [`gog`](https://gogcli.sh)-style CLI alternative for Microsoft 365.**
-A single static Go binary for Microsoft 365 / Microsoft Graph — mail, calendar,
-contacts, OneDrive, and SharePoint — built for terminals, shell scripts, CI, and
-coding agents.
+A single static Go binary for mail, calendar, contacts, OneDrive, and SharePoint
+— against **Microsoft 365 in the cloud (Graph)** or an **on-premise Exchange
+server (EWS)** — built for terminals, shell scripts, CI, and coding agents.
 
 Made by [makerslab.ai](https://makerslab.ai).
 
@@ -15,10 +15,14 @@ m365 drive ls --json
 
 ## What makes it different
 
-- **App-only, no login.** Authentication is certificate-based client credentials
-  (Microsoft Graph app-only). There is no browser consent flow and no user
-  session — an administrator sets up one Azure app once. Ideal for unattended
-  agents and CI.
+- **Two backends, one interface.** Talk to Microsoft 365 in the cloud (Graph) or
+  to an on-premise Exchange server (EWS, NTLM) — chosen with a single `backend`
+  field in config. Commands, allowlists, the send guardrail, and the JSON output
+  are identical either way; callers never learn which transport answered.
+- **App-only, no login (cloud).** On the Graph backend, authentication is
+  certificate-based client credentials — no browser consent, no user session; an
+  administrator sets up one Azure app once. The EWS backend uses a domain service
+  account (NTLM) with impersonation instead. Ideal for unattended agents and CI.
 - **Hard allowlists, fail-closed.** Every mailbox and every SharePoint site the
   binary may touch is listed in config. Anything not listed is refused **before**
   any network call. An empty list denies everything.
@@ -70,6 +74,25 @@ m365 doctor          # offline checks: config, certificate, allowlists
 m365 doctor --live   # acquires a real Graph token (verifies cert + tenant)
 ```
 
+### On-premise Exchange (EWS)
+
+For mail that lives on a local Exchange server instead of the cloud, set
+`backend = "ews"` and point at your EWS endpoint with an NTLM service account:
+
+```toml
+backend           = "ews"
+ews_url           = "https://mail.example.com/EWS/Exchange.asmx"
+ews_user          = "EXAMPLE\\svc-agent"     # DOMAIN\user, or a UPN
+ews_password_file = "/etc/m365/ews.pass"     # 0600 file holding only the password
+
+default_mailbox   = "agent@example.com"
+allowed_mailboxes = ["agent@example.com", "*@example.com"]
+send_allow        = ["*@partner.com"]
+```
+
+The full guide (service account, ApplicationImpersonation, what's supported) is
+in **[docs/ews-setup.md](docs/ews-setup.md)**.
+
 ## Commands
 
 ```
@@ -85,6 +108,12 @@ m365 sp        sites list items download                    # SharePoint, scoped
 ```
 
 Run `m365 <domain> --help` or `m365 <domain> <verb> --help` for flags.
+
+The full command set above runs against the **cloud (Graph)** backend. The
+**on-premise (EWS)** backend covers mail (incl. reply/attachments), calendar
+list/get/create/update/delete, and `mail watch poll`; `calendar freebusy`/
+`find-times`, `contacts`, and `drive`/`sp` are cloud-only and report
+`operation not supported by this backend` there.
 
 ### Composing mail safely
 
@@ -124,8 +153,9 @@ passed on the command line; the token cache is written `600`.
 ## Not in scope
 
 Teams chat, full Tasks/To-Do parity, and personal Microsoft accounts are out of
-scope — `m365` targets Microsoft 365 work tenants with app-only access. For
-delegated, user-login scenarios on Google Workspace, see [`gog`](https://gogcli.sh).
+scope — `m365` targets Microsoft 365 work tenants (cloud, app-only) and
+on-premise Exchange. For delegated, user-login scenarios on Google Workspace,
+see [`gog`](https://gogcli.sh).
 
 ## License
 
