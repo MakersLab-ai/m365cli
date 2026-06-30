@@ -157,6 +157,14 @@ scope — `m365` targets Microsoft 365 work tenants (cloud, app-only) and
 on-premise Exchange. For delegated, user-login scenarios on Google Workspace,
 see [`gog`](https://gogcli.sh).
 
+## Disclaimer & trademarks
+
+This is an independent, third-party project. It is **not** affiliated with,
+endorsed by, or sponsored by Microsoft. "Microsoft" and "Microsoft 365" are
+trademarks of the Microsoft group of companies; they are used here only to
+describe interoperability (nominative use). All other trademarks are the
+property of their respective owners.
+
 ## License
 
 See [LICENSE](LICENSE).
