@@ -190,6 +190,16 @@ func addComposeFlags(cmd *cobra.Command, mailbox, subject, bodyFile, cc *string,
 	cmd.Flags().BoolVar(asHTML, "html", false, "the body file already contains HTML — send it as an HTML body instead of plain text")
 }
 
+// noteAutoHTML tells the caller on stderr that the body was recognised as HTML
+// without --html. Sending it as text/plain would have shown the raw tags to the
+// recipient, so the CLI corrects it — but silently changing the content type is
+// the kind of thing an author should hear about.
+func noteAutoHTML(body string, asHTML bool) {
+	if !asHTML && mail.LooksLikeHTML(body) {
+		fmt.Fprintln(os.Stderr, "note: body file starts with HTML — sending as an HTML body (pass --html to state this explicitly)")
+	}
+}
+
 func composeMessage(subject, bodyFile string, to []string, cc string, asHTML bool) (mail.Message, error) {
 	if len(to) == 0 {
 		return mail.Message{}, fmt.Errorf("at least one --to recipient is required")
@@ -205,6 +215,7 @@ func composeMessage(subject, bodyFile string, to []string, cc string, asHTML boo
 	if cc != "" {
 		ccList = splitComma(cc)
 	}
+	noteAutoHTML(string(body), asHTML)
 	return mail.Message{Subject: subject, Body: string(body), To: to, Cc: ccList, HTML: asHTML}, nil
 }
 

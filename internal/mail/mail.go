@@ -97,7 +97,7 @@ func toGraph(m Message) (graphMessage, error) {
 		CcRecipients: recipients(m.Cc),
 	}
 	gm.Body.ContentType = "Text"
-	if m.HTML {
+	if m.HTML || LooksLikeHTML(m.Body) {
 		gm.Body.ContentType = "HTML"
 	}
 	gm.Body.Content = m.Body

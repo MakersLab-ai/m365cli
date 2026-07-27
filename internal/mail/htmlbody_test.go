@@ -31,3 +31,47 @@ func TestTextToHTMLEmptyStaysEmpty(t *testing.T) {
 		t.Errorf("TextToHTML = %q, want empty", got)
 	}
 }
+
+func TestLooksLikeHTMLDetectsWhatAgentsActuallyWrite(t *testing.T) {
+	// All four mails that reached recipients as raw tags started this way.
+	htmlBodies := []string{
+		"<html><body>\n<p>Hallo Frau Pucher,</p>\n",
+		"<!DOCTYPE html><html><body><p>Hi</p></body></html>",
+		"<body><p>Hi</p></body>",
+		"<p>Hallo Sandra,</p><p>danke dir.</p>",
+		"  \n<div style=\"font-family: Arial\">Hallo</div>",
+	}
+	for _, b := range htmlBodies {
+		if !LooksLikeHTML(b) {
+			t.Errorf("LooksLikeHTML(%.30q) = false, want true", b)
+		}
+	}
+}
+
+func TestLooksLikeHTMLLeavesProseAlone(t *testing.T) {
+	proseBodies := []string{
+		"Hallo Sandra,\n\nbitte um 12:30 zwei Menüs.",
+		"Preis < 5 Euro",
+		"<3 Grüße",
+		"",
+		"Siehe Anhang -> Angebot",
+		"Der Platzhalter <name> wird ersetzt.", // starts with prose, not a tag
+	}
+	for _, b := range proseBodies {
+		if LooksLikeHTML(b) {
+			t.Errorf("LooksLikeHTML(%.30q) = true, want false", b)
+		}
+	}
+}
+
+func TestTextToHTMLNotAppliedToBodiesThatAreAlreadyHTML(t *testing.T) {
+	// asHTML is the single decision point: an HTML body must never be escaped,
+	// with or without the --html flag.
+	body := "<html><body><p>Hallo</p></body></html>"
+	if got := asHTML(body, false); got != body {
+		t.Errorf("asHTML auto-detect = %q, want verbatim", got)
+	}
+	if got := asHTML(body, true); got != body {
+		t.Errorf("asHTML explicit = %q, want verbatim", got)
+	}
+}

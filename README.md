@@ -100,11 +100,18 @@ m365 mail send --to stranger@example.com --subject Hi --body-file ./body.txt
 # stderr: send guardrail: [stranger@example.com] not in send_allow — saving as draft
 ```
 
-Bodies are plain text by default. **Replies keep their line breaks**: Graph
-splices a reply into the HTML body of the original message, where newlines are
-insignificant, so `m365 mail reply` converts the plain text to HTML first (blank
-line → paragraph, single newline → `<br>`). Pass `--html` on `send`, `draft`, or
-`reply` when the body file already contains HTML and should be used verbatim.
+Bodies are plain text by default, and the formatting survives on every path:
+
+- **Replies keep their line breaks.** Graph splices a reply into the HTML body
+  of the original message, where newlines are insignificant, so `m365 mail
+  reply` converts the plain text to HTML first (blank line → paragraph, single
+  newline → `<br>`).
+- **An HTML body file is sent as HTML.** Pass `--html` to state it explicitly.
+  If you forget, a body that *starts* with a tag (`<html`, `<body`, `<p>`, …)
+  is recognised anyway and a note goes to stderr — otherwise the recipient
+  would read the markup instead of the mail. Prose is never touched: detection
+  looks at the opening of the body only, so a mail that merely mentions a tag
+  stays plain text.
 
 ### Watching a mailbox
 

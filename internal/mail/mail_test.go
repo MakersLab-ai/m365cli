@@ -213,3 +213,55 @@ func TestBuildReplyBodyPatchIsAlwaysHTML(t *testing.T) {
 		t.Errorf("content = %v, want line break preserved", body["content"])
 	}
 }
+
+func TestBuildMessageSendsDetectedHTMLAsHTML(t *testing.T) {
+	// The reported bug: the agent wrote an HTML document into the body file,
+	// it went out as contentType Text, and the recipient read the tags.
+	payload, err := BuildMessage(Message{
+		Subject: "Ihre Praktikumsanfrage",
+		Body:    "<html><body>\n<p>Sehr geehrte Frau Marko,</p>\n</body></html>",
+		To:      []string{"a@p.com"},
+	})
+	if err != nil {
+		t.Fatalf("BuildMessage: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err != nil {
+		t.Fatalf("payload not JSON: %v", err)
+	}
+	body, _ := m["body"].(map[string]any)
+	if body["contentType"] != "HTML" {
+		t.Errorf("contentType = %v, want HTML (body is an HTML document)", body["contentType"])
+	}
+}
+
+func TestBuildMessageKeepsProseAsText(t *testing.T) {
+	payload, err := BuildMessage(Message{Subject: "Hi", Body: "Hallo,\n\ndanke.", To: []string{"a@p.com"}})
+	if err != nil {
+		t.Fatalf("BuildMessage: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err != nil {
+		t.Fatalf("payload not JSON: %v", err)
+	}
+	body, _ := m["body"].(map[string]any)
+	if body["contentType"] != "Text" || body["content"] != "Hallo,\n\ndanke." {
+		t.Errorf("body = %v, want untouched plain text", body)
+	}
+}
+
+func TestBuildReplyCommentKeepsHTMLFragmentUnescaped(t *testing.T) {
+	// Agents learned to hand-write HTML fragments for replies. Escaping those
+	// now would show tags where the old behaviour accidentally rendered.
+	payload, err := BuildReplyComment("<p>Hallo Sandra,</p><p>danke dir.</p>", false)
+	if err != nil {
+		t.Fatalf("BuildReplyComment: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err != nil {
+		t.Fatalf("payload not JSON: %v", err)
+	}
+	if m["comment"] != "<p>Hallo Sandra,</p><p>danke dir.</p>" {
+		t.Errorf("comment = %v, want verbatim", m["comment"])
+	}
+}

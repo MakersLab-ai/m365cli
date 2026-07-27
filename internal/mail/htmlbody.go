@@ -32,10 +32,34 @@ func TextToHTML(text string) string {
 	return strings.Join(paragraphs, "")
 }
 
-// asHTML returns body ready for an HTML sink: verbatim when the caller states
-// it already wrote HTML, converted from plain text otherwise.
+// htmlOpeners are the tags a mail body realistically starts with when its
+// author wrote HTML — full documents and bare fragments alike.
+var htmlOpeners = []string{
+	"<!doctype", "<html", "<body", "<div", "<p>", "<p ", "<table", "<span",
+	"<font", "<ul", "<ol", "<br", "<h1", "<h2", "<h3",
+}
+
+// LooksLikeHTML reports whether a body was written as HTML. Only the opening
+// of the body decides: prose never *starts* with a tag, so this cannot misfire
+// on a mail that merely mentions one ("der Platzhalter <name> …").
+//
+// It is a safety net, not the interface — `--html` states the intent
+// explicitly. But a body that opens with `<html><body>` has exactly one
+// plausible reading, and sending it as text/plain shows the recipient the tags.
+func LooksLikeHTML(body string) bool {
+	head := strings.ToLower(strings.TrimSpace(body))
+	for _, opener := range htmlOpeners {
+		if strings.HasPrefix(head, opener) {
+			return true
+		}
+	}
+	return false
+}
+
+// asHTML returns body ready for an HTML sink: verbatim when it is already HTML,
+// converted from plain text otherwise.
 func asHTML(body string, isHTML bool) string {
-	if isHTML {
+	if isHTML || LooksLikeHTML(body) {
 		return body
 	}
 	return TextToHTML(body)

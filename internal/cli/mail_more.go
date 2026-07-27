@@ -30,6 +30,7 @@ func newMailReplyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			noteAutoHTML(body, asHTML)
 			id := args[0]
 
 			// Determine who the reply would reach, then apply the send guardrail.
