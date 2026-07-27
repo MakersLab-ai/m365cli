@@ -2,6 +2,7 @@ package graphbackend_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -106,7 +107,7 @@ func TestMailSendPostsSendMail(t *testing.T) {
 	var cap capture
 	be := newBackend(t, mailboxCfg(), &cap, http.StatusAccepted, ``)
 
-	err := be.Mail().Send(context.Background(), mbx, mail.Message{Subject: "s", Body: "b", To: []string{"x@y.com"}})
+	err := be.Mail().Send(context.Background(), mbx, mail.Message{Subject: "s", Body: mail.Body{Content: "b"}, To: []string{"x@y.com"}})
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -119,7 +120,7 @@ func TestMailCreateDraftReturnsID(t *testing.T) {
 	var cap capture
 	be := newBackend(t, mailboxCfg(), &cap, http.StatusCreated, `{"id":"DRAFT-7"}`)
 
-	id, err := be.Mail().CreateDraft(context.Background(), mbx, mail.Message{Subject: "s", Body: "b", To: []string{"x@y.com"}})
+	id, err := be.Mail().CreateDraft(context.Background(), mbx, mail.Message{Subject: "s", Body: mail.Body{Content: "b"}, To: []string{"x@y.com"}})
 	if err != nil {
 		t.Fatalf("CreateDraft: %v", err)
 	}
@@ -307,5 +308,60 @@ func TestSitesSearchIsUngatedDiscovery(t *testing.T) {
 	}
 	if cap.uri != "/sites?search=contoso" {
 		t.Errorf("search uri = %q", cap.uri)
+	}
+}
+
+// --- reply formatting (the fix in migration 0020) ---
+
+func TestMailReplySendsHTMLComment(t *testing.T) {
+	// Graph splices `comment` into the HTML body of the reply — plain text
+	// handed over verbatim arrives as one run-on paragraph.
+	var cap capture
+	be := newBackend(t, mailboxCfg(), &cap, http.StatusAccepted, ``)
+
+	err := be.Mail().Reply(context.Background(), mbx, "MSG-1", mail.Body{Content: "Hallo Sandra,\n\ndanke dir."}, false)
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if cap.uri != "/users/agent@example.com/messages/MSG-1/reply" {
+		t.Errorf("Reply hit %q", cap.uri)
+	}
+	var sent struct {
+		Comment string `json:"comment"`
+	}
+	if err := json.Unmarshal([]byte(cap.body), &sent); err != nil {
+		t.Fatalf("reply payload not JSON: %v (%s)", err, cap.body)
+	}
+	if sent.Comment != "<p>Hallo Sandra,</p><p>danke dir.</p>" {
+		t.Errorf("comment = %q, want paragraphs", sent.Comment)
+	}
+}
+
+func TestMailCreateReplyDraftPatchesBodyAsHTML(t *testing.T) {
+	// The draft createReply returns is an HTML message; a Text patch collapses it.
+	var cap capture
+	be := newBackend(t, mailboxCfg(), &cap, http.StatusCreated, `{"id":"DRAFT-9"}`)
+
+	id, err := be.Mail().CreateReplyDraft(context.Background(), mbx, "MSG-1", mail.Body{Content: "eins\nzwei"}, false)
+	if err != nil {
+		t.Fatalf("CreateReplyDraft: %v", err)
+	}
+	if id != "DRAFT-9" {
+		t.Errorf("draft id = %q, want DRAFT-9", id)
+	}
+	if cap.method != http.MethodPatch {
+		t.Errorf("last request = %s, want PATCH of the draft body", cap.method)
+	}
+	var patch struct {
+		Body struct {
+			ContentType string `json:"contentType"`
+			Content     string `json:"content"`
+		} `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(cap.body), &patch); err != nil {
+		t.Fatalf("patch not JSON: %v (%s)", err, cap.body)
+	}
+	if patch.Body.ContentType != "HTML" || patch.Body.Content != "<p>eins<br>zwei</p>" {
+		t.Errorf("patch body = %+v, want an HTML body with the line break kept", patch.Body)
 	}
 }

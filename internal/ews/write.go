@@ -7,12 +7,23 @@ import (
 )
 
 // OutMessage is a neutral outgoing message (the backend maps mail.Message onto
-// it). Bodies are sent as plain text, matching the Graph backend.
+// it).
 type OutMessage struct {
 	Subject string
-	Body    string
+	Body    Body
 	To      []string
 	Cc      []string
+}
+
+// bodyType is the BodyType attribute for an outgoing body. EWS types every body
+// explicitly, and unlike Graph it keeps a Text body as plain text — line breaks
+// survive. The typing still has to be right, though: HTML sent as
+// BodyType="Text" shows the recipient the raw tags. Anything but HTML is text.
+func bodyType(b Body) string {
+	if b.Type == "HTML" {
+		return "HTML"
+	}
+	return "Text"
 }
 
 // --- CreateItem (send / draft) ---
@@ -84,8 +95,8 @@ func createItemEnvelope(mailbox string, m OutMessage, disposition, savedFolder s
 		`<m:SavedItemFolderId><t:DistinguishedFolderId Id="%s"/></m:SavedItemFolderId>`+
 		`<m:Items><t:Message>`+
 		`<t:Subject>%s</t:Subject>`+
-		`<t:Body BodyType="Text">%s</t:Body>`,
-		disposition, savedFolder, esc(m.Subject), esc(m.Body))
+		`<t:Body BodyType="%s">%s</t:Body>`,
+		disposition, savedFolder, esc(m.Subject), bodyType(m.Body), esc(m.Body.Content))
 	writeRecipients(&b, "ToRecipients", m.To)
 	writeRecipients(&b, "CcRecipients", m.Cc)
 	b.WriteString(`</t:Message></m:Items></m:CreateItem></soap:Body></soap:Envelope>`)

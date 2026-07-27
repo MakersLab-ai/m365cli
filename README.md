@@ -129,6 +129,24 @@ m365 mail send --to stranger@example.com --subject Hi --body-file ./body.txt
 # stderr: send guardrail: [stranger@example.com] not in send_allow — saving as draft
 ```
 
+Bodies are plain text by default, and the formatting survives on every path:
+
+- **Replies keep their line breaks.** Graph splices a reply into the HTML body
+  of the original message, where newlines are insignificant, so `m365 mail
+  reply` converts the plain text to HTML first (blank line → paragraph, single
+  newline → `<br>`).
+- **An HTML body file is sent as HTML.** Pass `--html` to state it explicitly.
+  If you forget, a body that *starts* with a tag (`<html`, `<body`, `<p>`, …)
+  is recognised anyway and a note goes to stderr — otherwise the recipient
+  would read the markup instead of the mail. Prose is never touched: detection
+  looks at the opening of the body only, so a mail that merely mentions a tag
+  stays plain text.
+
+Both backends honour this, each in its own terms: Graph needs the conversion
+described above, while EWS types every body explicitly and keeps a plain-text
+body plain (its line breaks survive as-is) — there it is the `BodyType` that has
+to match what you wrote.
+
 ### Watching a mailbox
 
 `m365 mail watch poll` delta-polls one or more mailboxes and forwards new mail

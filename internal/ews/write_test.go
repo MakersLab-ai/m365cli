@@ -28,7 +28,7 @@ func TestSendMessageBuildsCreateItem(t *testing.T) {
 		_, _ = io.WriteString(w, createSendSuccess)
 	})
 	err := c.SendMessage(context.Background(), mbx, OutMessage{
-		Subject: "Hi", Body: "Hello & <bye>", To: []string{"x@y.com"}, Cc: []string{"c@y.com"},
+		Subject: "Hi", Body: Body{Content: "Hello & <bye>"}, To: []string{"x@y.com"}, Cc: []string{"c@y.com"},
 	})
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
@@ -51,7 +51,7 @@ func TestSendMessageOmitsEmptyCc(t *testing.T) {
 	c, body := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, createSendSuccess)
 	})
-	if err := c.SendMessage(context.Background(), mbx, OutMessage{Subject: "s", Body: "b", To: []string{"x@y.com"}}); err != nil {
+	if err := c.SendMessage(context.Background(), mbx, OutMessage{Subject: "s", Body: Body{Content: "b"}, To: []string{"x@y.com"}}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	if strings.Contains(*body, "CcRecipients") {
@@ -63,7 +63,7 @@ func TestCreateDraftSaveOnlyReturnsID(t *testing.T) {
 	c, body := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, createDraftSuccess)
 	})
-	id, err := c.CreateDraft(context.Background(), mbx, OutMessage{Subject: "s", Body: "b", To: []string{"x@y.com"}})
+	id, err := c.CreateDraft(context.Background(), mbx, OutMessage{Subject: "s", Body: Body{Content: "b"}, To: []string{"x@y.com"}})
 	if err != nil {
 		t.Fatalf("CreateDraft: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestCreateItemErrorIsLoud(t *testing.T) {
    <m:MessageText>Recipient invalid.</m:MessageText><m:ResponseCode>ErrorInvalidRecipients</m:ResponseCode>
   </m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse></soap:Body></soap:Envelope>`
 	c, _ := testClient(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, errResp) })
-	err := c.SendMessage(context.Background(), mbx, OutMessage{Subject: "s", Body: "b", To: []string{"x@y.com"}})
+	err := c.SendMessage(context.Background(), mbx, OutMessage{Subject: "s", Body: Body{Content: "b"}, To: []string{"x@y.com"}})
 	if err == nil || !strings.Contains(err.Error(), "ErrorInvalidRecipients") {
 		t.Fatalf("want loud CreateItem error, got %v", err)
 	}
@@ -116,5 +116,21 @@ func TestSendRefusesOutOfScope(t *testing.T) {
 	}
 	if hit {
 		t.Error("server must NOT be called for a disallowed mailbox")
+	}
+}
+
+func TestSendMessageTypesHTMLBodiesAsHTML(t *testing.T) {
+	c, body := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, createSendSuccess)
+	})
+	err := c.SendMessage(context.Background(), mbx, OutMessage{
+		Subject: "Hi", Body: Body{Type: "HTML", Content: "<p>Hallo</p>"}, To: []string{"x@y.com"},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	want := `<t:Body BodyType="HTML">&lt;p&gt;Hallo&lt;/p&gt;</t:Body>`
+	if !strings.Contains(*body, want) {
+		t.Errorf("request missing %q\nbody: %s", want, *body)
 	}
 }

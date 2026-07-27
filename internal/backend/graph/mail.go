@@ -64,7 +64,7 @@ func (m mailSvc) ReplyContext(ctx context.Context, mailbox, id string, replyAll 
 	return mail.ReplyRecipients(msgJSON, replyAll)
 }
 
-func (m mailSvc) Reply(ctx context.Context, mailbox, id, body string, replyAll bool) error {
+func (m mailSvc) Reply(ctx context.Context, mailbox, id string, body mail.Body, replyAll bool) error {
 	payload, err := mail.BuildReplyComment(body)
 	if err != nil {
 		return err
@@ -77,7 +77,7 @@ func (m mailSvc) Reply(ctx context.Context, mailbox, id, body string, replyAll b
 	return err
 }
 
-func (m mailSvc) CreateReplyDraft(ctx context.Context, mailbox, id, body string, replyAll bool) (string, error) {
+func (m mailSvc) CreateReplyDraft(ctx context.Context, mailbox, id string, body mail.Body, replyAll bool) (string, error) {
 	create := "createReply"
 	if replyAll {
 		create = "createReplyAll"
@@ -92,9 +92,10 @@ func (m mailSvc) CreateReplyDraft(ctx context.Context, mailbox, id, body string,
 	if err := json.Unmarshal(draftJSON, &draft); err != nil || draft.ID == "" {
 		return "", fmt.Errorf("create reply draft: unexpected response: %s", string(draftJSON))
 	}
-	patch, err := json.Marshal(map[string]any{
-		"body": map[string]string{"contentType": "Text", "content": body},
-	})
+	// The draft createReply hands back is an HTML message (it carries the quoted
+	// original), so the body is written as HTML — patching it as Text converts
+	// nothing and loses every line break.
+	patch, err := mail.BuildReplyBodyPatch(body)
 	if err != nil {
 		return "", err
 	}

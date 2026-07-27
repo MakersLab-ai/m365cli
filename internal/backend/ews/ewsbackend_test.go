@@ -92,14 +92,14 @@ const createDraftSuccess = `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.or
 
 func TestMailSendSucceeds(t *testing.T) {
 	be := newBackend(t, createSendSuccess)
-	if err := be.Mail().Send(context.Background(), mbx, mail.Message{Subject: "s", Body: "b", To: []string{"x@y.com"}}); err != nil {
+	if err := be.Mail().Send(context.Background(), mbx, mail.Message{Subject: "s", Body: mail.Body{Content: "b"}, To: []string{"x@y.com"}}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 }
 
 func TestMailCreateDraftReturnsID(t *testing.T) {
 	be := newBackend(t, createDraftSuccess)
-	id, err := be.Mail().CreateDraft(context.Background(), mbx, mail.Message{Subject: "s", Body: "b", To: []string{"x@y.com"}})
+	id, err := be.Mail().CreateDraft(context.Background(), mbx, mail.Message{Subject: "s", Body: mail.Body{Content: "b"}, To: []string{"x@y.com"}})
 	if err != nil {
 		t.Fatalf("CreateDraft: %v", err)
 	}

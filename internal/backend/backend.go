@@ -69,8 +69,11 @@ type MailService interface {
 	// ReplyContext returns the addresses a reply/replyAll would reach, so the
 	// CLI can apply the send guardrail before sending.
 	ReplyContext(ctx context.Context, mailbox, id string, replyAll bool) (recipients []string, err error)
-	Reply(ctx context.Context, mailbox, id, body string, replyAll bool) error
-	CreateReplyDraft(ctx context.Context, mailbox, id, body string, replyAll bool) (draftID string, err error)
+	// Reply and CreateReplyDraft take the body as authored (mail.Body carries
+	// text-vs-HTML), not pre-rendered: the right rendering is transport-specific
+	// — Graph's reply path is HTML-only, EWS types its bodies explicitly.
+	Reply(ctx context.Context, mailbox, id string, body mail.Body, replyAll bool) error
+	CreateReplyDraft(ctx context.Context, mailbox, id string, body mail.Body, replyAll bool) (draftID string, err error)
 
 	Attachments(ctx context.Context, mailbox, msgID string) ([]byte, error)
 	// GetAttachment returns the attachment resource JSON (the CLI decodes the

@@ -45,7 +45,18 @@ func (m mailSvc) CreateDraft(ctx context.Context, mailbox string, msg mail.Messa
 
 // outMessage maps the neutral compose input onto the EWS transport's input.
 func outMessage(m mail.Message) ews.OutMessage {
-	return ews.OutMessage{Subject: m.Subject, Body: m.Body, To: m.To, Cc: m.Cc}
+	return ews.OutMessage{Subject: m.Subject, Body: outBody(m.Body), To: m.To, Cc: m.Cc}
+}
+
+// outBody maps an authored body onto an EWS body. Plain text stays plain text —
+// EWS keeps its line breaks, so unlike Graph there is nothing to convert; only
+// the BodyType has to match what the author actually wrote.
+func outBody(b mail.Body) ews.Body {
+	t := "Text"
+	if b.IsHTML() {
+		t = "HTML"
+	}
+	return ews.Body{Type: t, Content: b.Content}
 }
 
 // ReplyContext returns the addresses a reply/replyAll would reach (sender, plus
@@ -78,12 +89,12 @@ func (m mailSvc) ReplyContext(ctx context.Context, mailbox, id string, replyAll 
 	return out, nil
 }
 
-func (m mailSvc) Reply(ctx context.Context, mailbox, id, body string, replyAll bool) error {
-	return m.c.Reply(ctx, mailbox, id, body, replyAll)
+func (m mailSvc) Reply(ctx context.Context, mailbox, id string, body mail.Body, replyAll bool) error {
+	return m.c.Reply(ctx, mailbox, id, outBody(body), replyAll)
 }
 
-func (m mailSvc) CreateReplyDraft(ctx context.Context, mailbox, id, body string, replyAll bool) (string, error) {
-	return m.c.CreateReplyDraft(ctx, mailbox, id, body, replyAll)
+func (m mailSvc) CreateReplyDraft(ctx context.Context, mailbox, id string, body mail.Body, replyAll bool) (string, error) {
+	return m.c.CreateReplyDraft(ctx, mailbox, id, outBody(body), replyAll)
 }
 
 func (m mailSvc) Attachments(ctx context.Context, mailbox, msgID string) ([]byte, error) {

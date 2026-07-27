@@ -14,7 +14,7 @@ import (
 
 func newMailReplyCmd() *cobra.Command {
 	var mailbox, bodyFile string
-	var replyAll bool
+	var replyAll, asHTML bool
 	cmd := &cobra.Command{
 		Use:   "reply <message-id> --body-file <f>",
 		Short: "Reply to a message — falls back to a reply-draft if a recipient is outside send_allow",
@@ -24,10 +24,12 @@ func newMailReplyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			body, err := readBodyFile(bodyFile)
+			text, err := readBodyFile(bodyFile)
 			if err != nil {
 				return err
 			}
+			noteAutoHTML(text, asHTML)
+			body := mail.Body{Content: text, HTML: asHTML}
 			id := args[0]
 
 			// Determine who the reply would reach, then apply the send guardrail.
@@ -50,12 +52,13 @@ func newMailReplyCmd() *cobra.Command {
 	cmd.Flags().StringVar(&mailbox, "mailbox", "", "mailbox to operate on (defaults to default_mailbox)")
 	cmd.Flags().StringVar(&bodyFile, "body-file", "", "path to a file containing the reply body")
 	cmd.Flags().BoolVar(&replyAll, "reply-all", false, "reply to all original recipients")
+	cmd.Flags().BoolVar(&asHTML, "html", false, "the body file already contains HTML — use it verbatim instead of converting the plain text")
 	return cmd
 }
 
 // createReplyDraft creates a draft reply (createReply/createReplyAll) with its
 // body set, leaving it unsent for human review.
-func createReplyDraft(ctx context.Context, client backend.Backend, mbx, id, body string, replyAll bool, blocked []string) error {
+func createReplyDraft(ctx context.Context, client backend.Backend, mbx, id string, body mail.Body, replyAll bool, blocked []string) error {
 	draftID, err := client.Mail().CreateReplyDraft(ctx, mbx, id, body, replyAll)
 	if err != nil {
 		return err

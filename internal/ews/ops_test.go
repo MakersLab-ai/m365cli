@@ -15,7 +15,7 @@ func TestReplyBuildsReplyToItem(t *testing.T) {
 	c, body := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, createSendSuccess)
 	})
-	if err := c.Reply(context.Background(), mbx, "REF-1", "thanks", false); err != nil {
+	if err := c.Reply(context.Background(), mbx, "REF-1", Body{Content: "thanks"}, false); err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
 	want := `<m:Items><t:ReplyToItem><t:ReferenceItemId Id="REF-1"/><t:NewBodyContent BodyType="Text">thanks</t:NewBodyContent></t:ReplyToItem></m:Items>`
@@ -29,7 +29,7 @@ func TestReplyBuildsReplyToItem(t *testing.T) {
 
 func TestReplyAllUsesReplyAllToItem(t *testing.T) {
 	c, body := testClient(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, createSendSuccess) })
-	if err := c.Reply(context.Background(), mbx, "REF-2", "ok", true); err != nil {
+	if err := c.Reply(context.Background(), mbx, "REF-2", Body{Content: "ok"}, true); err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
 	if !strings.Contains(*body, "<t:ReplyAllToItem>") {
@@ -39,7 +39,7 @@ func TestReplyAllUsesReplyAllToItem(t *testing.T) {
 
 func TestCreateReplyDraftReturnsID(t *testing.T) {
 	c, body := testClient(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, createDraftSuccess) })
-	id, err := c.CreateReplyDraft(context.Background(), mbx, "REF-3", "draft", false)
+	id, err := c.CreateReplyDraft(context.Background(), mbx, "REF-3", Body{Content: "draft"}, false)
 	if err != nil {
 		t.Fatalf("CreateReplyDraft: %v", err)
 	}
@@ -259,5 +259,35 @@ func TestSyncInboxIncrementalSendsSyncState(t *testing.T) {
 	}
 	if !strings.Contains(*body, `<m:SyncFolderId><t:DistinguishedFolderId Id="inbox"/></m:SyncFolderId><m:SyncState>STATE-1</m:SyncState>`) {
 		t.Errorf("incremental must send SyncState after SyncFolderId: %s", *body)
+	}
+}
+
+func TestReplyTypesHTMLBodiesAsHTML(t *testing.T) {
+	// EWS keeps a Text body as plain text — unlike Graph there is nothing to
+	// convert. But an HTML body declared as Text shows the recipient the tags.
+	c, body := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, createSendSuccess)
+	})
+	if err := c.Reply(context.Background(), mbx, "REF-4", Body{Type: "HTML", Content: "<p>Hallo</p>"}, false); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	want := `<t:NewBodyContent BodyType="HTML">&lt;p&gt;Hallo&lt;/p&gt;</t:NewBodyContent>`
+	if !strings.Contains(*body, want) {
+		t.Errorf("reply body wrong\ngot:  %s\nwant substring: %s", *body, want)
+	}
+}
+
+func TestReplyKeepsPlainTextLineBreaks(t *testing.T) {
+	c, body := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, createSendSuccess)
+	})
+	if err := c.Reply(context.Background(), mbx, "REF-5", Body{Content: "eins\nzwei"}, false); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	// The newline survives as an XML character reference — it is preserved,
+	// not converted to markup the way the Graph path has to.
+	want := `<t:NewBodyContent BodyType="Text">eins&#xA;zwei</t:NewBodyContent>`
+	if !strings.Contains(*body, want) {
+		t.Errorf("plain text must travel unconverted\ngot: %s", *body)
 	}
 }

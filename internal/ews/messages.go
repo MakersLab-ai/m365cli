@@ -13,9 +13,10 @@ type Address struct {
 	Address string
 }
 
-// Body is a neutral message body.
+// Body is a neutral message body — both directions: as returned by EWS when
+// reading, and as handed to CreateItem when composing.
 type Body struct {
-	Type    string // "Text" or "HTML" as returned by EWS
+	Type    string // "Text" or "HTML"
 	Content string
 }
 
