@@ -100,6 +100,12 @@ m365 mail send --to stranger@example.com --subject Hi --body-file ./body.txt
 # stderr: send guardrail: [stranger@example.com] not in send_allow — saving as draft
 ```
 
+Bodies are plain text by default. **Replies keep their line breaks**: Graph
+splices a reply into the HTML body of the original message, where newlines are
+insignificant, so `m365 mail reply` converts the plain text to HTML first (blank
+line → paragraph, single newline → `<br>`). Pass `--html` on `send`, `draft`, or
+`reply` when the body file already contains HTML and should be used verbatim.
+
 ### Watching a mailbox
 
 `m365 mail watch poll` delta-polls one or more mailboxes and forwards new mail

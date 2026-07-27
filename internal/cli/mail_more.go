@@ -16,7 +16,7 @@ import (
 
 func newMailReplyCmd() *cobra.Command {
 	var mailbox, bodyFile string
-	var replyAll bool
+	var replyAll, asHTML bool
 	cmd := &cobra.Command{
 		Use:   "reply <message-id> --body-file <f>",
 		Short: "Reply to a message — falls back to a reply-draft if a recipient is outside send_allow",
@@ -44,10 +44,10 @@ func newMailReplyCmd() *cobra.Command {
 
 			if plan := mail.PlanSend(cfg, recipients); plan.Action == mail.DraftOnly {
 				fmt.Fprintf(os.Stderr, "send guardrail: %v not in send_allow — saving as reply-draft for review\n", plan.Blocked)
-				return createReplyDraft(cmd.Context(), client, mbx, id, body, replyAll, plan.Blocked)
+				return createReplyDraft(cmd.Context(), client, mbx, id, body, replyAll, asHTML, plan.Blocked)
 			}
 
-			payload, err := mail.BuildReplyComment(body)
+			payload, err := mail.BuildReplyComment(body, asHTML)
 			if err != nil {
 				return err
 			}
@@ -64,12 +64,13 @@ func newMailReplyCmd() *cobra.Command {
 	cmd.Flags().StringVar(&mailbox, "mailbox", "", "mailbox to operate on (defaults to default_mailbox)")
 	cmd.Flags().StringVar(&bodyFile, "body-file", "", "path to a file containing the reply body")
 	cmd.Flags().BoolVar(&replyAll, "reply-all", false, "reply to all original recipients")
+	cmd.Flags().BoolVar(&asHTML, "html", false, "the body file already contains HTML — use it verbatim instead of converting the plain text")
 	return cmd
 }
 
 // createReplyDraft creates a draft reply (createReply/createReplyAll) and sets
 // its body via PATCH, leaving it unsent for human review.
-func createReplyDraft(ctx context.Context, client *graph.Client, mbx, id, body string, replyAll bool, blocked []string) error {
+func createReplyDraft(ctx context.Context, client *graph.Client, mbx, id, body string, replyAll, asHTML bool, blocked []string) error {
 	create := "createReply"
 	if replyAll {
 		create = "createReplyAll"
@@ -84,9 +85,7 @@ func createReplyDraft(ctx context.Context, client *graph.Client, mbx, id, body s
 	if err := json.Unmarshal(draftJSON, &draft); err != nil || draft.ID == "" {
 		return fmt.Errorf("create reply draft: unexpected response: %s", string(draftJSON))
 	}
-	patch, err := json.Marshal(map[string]any{
-		"body": map[string]string{"contentType": "Text", "content": body},
-	})
+	patch, err := mail.BuildReplyBodyPatch(body, asHTML)
 	if err != nil {
 		return err
 	}

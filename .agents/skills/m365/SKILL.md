@@ -48,6 +48,10 @@ stderr — read stdout for results.
   an operator config change (`send_unrestricted`), not something you set per call.
 - Compose bodies with **`--body-file`**, never an inline body flag (avoids shell
   escaping and accidental content corruption).
+- **Write the body as plain text with normal blank lines.** The CLI keeps that
+  layout on every path, replies included. Only pass `--html` when you
+  deliberately wrote HTML into the body file — then it is used verbatim and you
+  own the escaping.
 - `calendar delete` and similar mutations are irreversible — only run them when
   the user asked for that exact change.
 - Run `m365 doctor` first if anything is misconfigured; it explains what's wrong

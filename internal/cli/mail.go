@@ -121,6 +121,7 @@ func newMailSearchCmd() *cobra.Command {
 func newMailSendCmd() *cobra.Command {
 	var mailbox, subject, bodyFile, cc string
 	var to []string
+	var asHTML bool
 	cmd := &cobra.Command{
 		Use:   "send --to <addr> --subject <s> --body-file <f>",
 		Short: "Send a message — falls back to a draft if any recipient is outside send_allow",
@@ -129,7 +130,7 @@ func newMailSendCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			msg, err := composeMessage(subject, bodyFile, to, cc)
+			msg, err := composeMessage(subject, bodyFile, to, cc, asHTML)
 			if err != nil {
 				return err
 			}
@@ -151,13 +152,14 @@ func newMailSendCmd() *cobra.Command {
 			return output.WriteJSON(os.Stdout, map[string]any{"sent": true, "mailbox": mbx, "to": msg.To})
 		},
 	}
-	addComposeFlags(cmd, &mailbox, &subject, &bodyFile, &cc, &to)
+	addComposeFlags(cmd, &mailbox, &subject, &bodyFile, &cc, &to, &asHTML)
 	return cmd
 }
 
 func newMailDraftCmd() *cobra.Command {
 	var mailbox, subject, bodyFile, cc string
 	var to []string
+	var asHTML bool
 	cmd := &cobra.Command{
 		Use:   "draft --to <addr> --subject <s> --body-file <f>",
 		Short: "Create a draft message (never sends)",
@@ -166,28 +168,29 @@ func newMailDraftCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			msg, err := composeMessage(subject, bodyFile, to, cc)
+			msg, err := composeMessage(subject, bodyFile, to, cc, asHTML)
 			if err != nil {
 				return err
 			}
 			return createDraft(cmd.Context(), client, mbx, msg, nil)
 		},
 	}
-	addComposeFlags(cmd, &mailbox, &subject, &bodyFile, &cc, &to)
+	addComposeFlags(cmd, &mailbox, &subject, &bodyFile, &cc, &to, &asHTML)
 	return cmd
 }
 
 // --- shared compose helpers ---
 
-func addComposeFlags(cmd *cobra.Command, mailbox, subject, bodyFile, cc *string, to *[]string) {
+func addComposeFlags(cmd *cobra.Command, mailbox, subject, bodyFile, cc *string, to *[]string, asHTML *bool) {
 	cmd.Flags().StringVar(mailbox, "mailbox", "", "mailbox to send from (defaults to default_mailbox)")
 	cmd.Flags().StringSliceVar(to, "to", nil, "recipient address (repeatable)")
 	cmd.Flags().StringVar(cc, "cc", "", "cc address (comma-separated)")
 	cmd.Flags().StringVar(subject, "subject", "", "message subject")
 	cmd.Flags().StringVar(bodyFile, "body-file", "", "path to a file containing the message body (avoids shell escaping)")
+	cmd.Flags().BoolVar(asHTML, "html", false, "the body file already contains HTML — send it as an HTML body instead of plain text")
 }
 
-func composeMessage(subject, bodyFile string, to []string, cc string) (mail.Message, error) {
+func composeMessage(subject, bodyFile string, to []string, cc string, asHTML bool) (mail.Message, error) {
 	if len(to) == 0 {
 		return mail.Message{}, fmt.Errorf("at least one --to recipient is required")
 	}
@@ -202,7 +205,7 @@ func composeMessage(subject, bodyFile string, to []string, cc string) (mail.Mess
 	if cc != "" {
 		ccList = splitComma(cc)
 	}
-	return mail.Message{Subject: subject, Body: string(body), To: to, Cc: ccList}, nil
+	return mail.Message{Subject: subject, Body: string(body), To: to, Cc: ccList, HTML: asHTML}, nil
 }
 
 func createDraft(ctx context.Context, client *graph.Client, mbx string, msg mail.Message, blocked []string) error {

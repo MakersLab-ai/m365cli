@@ -148,3 +148,68 @@ func TestDecodeAttachmentRejectsMissingContent(t *testing.T) {
 		t.Error("DecodeAttachment must error when contentBytes is absent (e.g. item/reference attachment)")
 	}
 }
+
+func TestBuildReplyCommentConvertsPlainTextToHTML(t *testing.T) {
+	// Graph injects `comment` into the reply's HTML body, so a plain-text
+	// comment loses every line break. Convert before handing it over.
+	payload, err := BuildReplyComment("Hallo Sandra,\n\ndanke dir.", false)
+	if err != nil {
+		t.Fatalf("BuildReplyComment: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err != nil {
+		t.Fatalf("payload not JSON: %v", err)
+	}
+	if m["comment"] != "<p>Hallo Sandra,</p><p>danke dir.</p>" {
+		t.Errorf("comment = %v, want paragraphs", m["comment"])
+	}
+}
+
+func TestBuildReplyCommentPassesHTMLThrough(t *testing.T) {
+	payload, err := BuildReplyComment("<p>Hallo</p>", true)
+	if err != nil {
+		t.Fatalf("BuildReplyComment: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err != nil {
+		t.Fatalf("payload not JSON: %v", err)
+	}
+	if m["comment"] != "<p>Hallo</p>" {
+		t.Errorf("comment = %v, want verbatim HTML", m["comment"])
+	}
+}
+
+func TestBuildMessageMarksHTMLBodies(t *testing.T) {
+	payload, err := BuildMessage(Message{Subject: "Hi", Body: "<p>Hello</p>", To: []string{"a@p.com"}, HTML: true})
+	if err != nil {
+		t.Fatalf("BuildMessage: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err != nil {
+		t.Fatalf("payload not JSON: %v", err)
+	}
+	body, _ := m["body"].(map[string]any)
+	if body["contentType"] != "HTML" || body["content"] != "<p>Hello</p>" {
+		t.Errorf("body = %v, want HTML content type and verbatim content", body)
+	}
+}
+
+func TestBuildReplyBodyPatchIsAlwaysHTML(t *testing.T) {
+	// The reply draft Graph hands back is an HTML message; patching it with a
+	// Text body collapses the text into a single paragraph.
+	payload, err := BuildReplyBodyPatch("eins\nzwei", false)
+	if err != nil {
+		t.Fatalf("BuildReplyBodyPatch: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err != nil {
+		t.Fatalf("payload not JSON: %v", err)
+	}
+	body, _ := m["body"].(map[string]any)
+	if body["contentType"] != "HTML" {
+		t.Errorf("contentType = %v, want HTML", body["contentType"])
+	}
+	if body["content"] != "<p>eins<br>zwei</p>" {
+		t.Errorf("content = %v, want line break preserved", body["content"])
+	}
+}
