@@ -1,14 +1,12 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 
 	"github.com/spf13/cobra"
 
-	"github.com/MakersLab-ai/m365cli/internal/graph"
+	"github.com/MakersLab-ai/m365cli/internal/backend"
 	"github.com/MakersLab-ai/m365cli/internal/output"
 )
 
@@ -23,29 +21,14 @@ func newSpCmd() *cobra.Command {
 	return sp
 }
 
-// siteClient builds a Graph client without resolving a mailbox (SharePoint is
+// siteClient builds the backend without resolving a mailbox (SharePoint is
 // site-scoped, not mailbox-scoped).
-func siteClient() (*graph.Client, error) {
+func siteClient() (backend.Backend, error) {
 	cfg, err := loadConfig()
 	if err != nil {
 		return nil, err
 	}
-	return newGraphClient(cfg)
-}
-
-// emitSiteValue runs a site-scoped GET and emits the `value` array.
-func emitSiteValue(cmd *cobra.Command, client *graph.Client, siteID, suffix string) error {
-	body, err := client.GetForSite(cmd.Context(), siteID, suffix)
-	if err != nil {
-		return err
-	}
-	var page struct {
-		Value json.RawMessage `json:"value"`
-	}
-	if err := json.Unmarshal(body, &page); err != nil {
-		return fmt.Errorf("parse Graph response: %w", err)
-	}
-	return output.WriteJSON(os.Stdout, json.RawMessage(page.Value))
+	return newBackend(cfg)
 }
 
 // newSpSitesCmd is discovery: it finds site IDs to add to allowed_sites. It is
@@ -56,25 +39,15 @@ func newSpSitesCmd() *cobra.Command {
 		Short: "Search for sites to discover their IDs (not gated by allowed_sites)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadConfig()
+			client, err := siteClient()
 			if err != nil {
 				return err
 			}
-			client, err := newGraphClient(cfg)
+			data, err := client.Sites().Search(cmd.Context(), args[0])
 			if err != nil {
 				return err
 			}
-			body, err := client.SearchSites(cmd.Context(), args[0])
-			if err != nil {
-				return err
-			}
-			var page struct {
-				Value json.RawMessage `json:"value"`
-			}
-			if err := json.Unmarshal(body, &page); err != nil {
-				return fmt.Errorf("parse Graph response: %w", err)
-			}
-			return output.WriteJSON(os.Stdout, json.RawMessage(page.Value))
+			return emitData(data)
 		},
 	}
 	return cmd
@@ -90,7 +63,11 @@ func newSpListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return emitSiteValue(cmd, client, args[0], "drives?$select=id,name,webUrl,driveType")
+			data, err := client.Sites().ListDrives(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return emitData(data)
 		},
 	}
 	return cmd
@@ -107,13 +84,11 @@ func newSpItemsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var suffix string
-			if path == "" || path == "/" {
-				suffix = "drive/root/children?$select=" + driveItemSelect
-			} else {
-				suffix = "drive/root:/" + escapeDrivePath(path) + ":/children?$select=" + driveItemSelect
+			data, err := client.Sites().Items(cmd.Context(), args[0], path)
+			if err != nil {
+				return err
 			}
-			return emitSiteValue(cmd, client, args[0], suffix)
+			return emitData(data)
 		},
 	}
 	cmd.Flags().StringVar(&path, "path", "", "folder path within the library (default root)")
@@ -134,7 +109,7 @@ func newSpDownloadCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			content, err := client.GetForSite(cmd.Context(), args[0], "drive/items/"+url.PathEscape(args[1])+"/content")
+			content, err := client.Sites().Download(cmd.Context(), args[0], args[1])
 			if err != nil {
 				return err
 			}

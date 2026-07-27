@@ -14,6 +14,8 @@ output for terminals, scripts, CI, and coding agents. Made by
   `Sites.Selected` (drive/SharePoint, incl. per-OneDrive grants), and the
   `config.toml` mapping. Also available in German:
   [azure-setup.de.md](azure-setup.de.md).
+- **[On-premise Exchange (EWS)](ews-setup.md)** — the `backend = "ews"` path for
+  local Exchange servers: NTLM service account, ExchangeImpersonation, config.
 - **[Watching mail](watch.md)** — `m365 mail watch poll`: delta-poll mailboxes
   and forward new mail to a webhook (usage, payload, reliability contract).
 - **[Agent skill](../.agents/skills/m365/SKILL.md)** — how a coding agent should
@@ -43,3 +45,9 @@ Run `m365 <domain> --help` or `m365 <domain> <verb> --help` for flags.
   for human review, unless `send_unrestricted` is set (which `doctor` flags).
 - **Output contract.** `--json` writes a stable envelope to stdout; human hints
   go to stderr.
+
+## Disclaimer & trademarks
+
+Independent, third-party project — **not** affiliated with, endorsed by, or
+sponsored by Microsoft. "Microsoft" and "Microsoft 365" are trademarks of the
+Microsoft group of companies, used here only to describe interoperability.

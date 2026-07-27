@@ -56,11 +56,24 @@ func LooksLikeHTML(body string) bool {
 	return false
 }
 
-// asHTML returns body ready for an HTML sink: verbatim when it is already HTML,
-// converted from plain text otherwise.
-func asHTML(body string, isHTML bool) string {
-	if isHTML || LooksLikeHTML(body) {
-		return body
+// Body is an outgoing mail body plus how its author wrote it. It travels
+// through the backend seam unchanged, because whether plain text needs
+// converting depends on the sink: Graph's reply path is HTML-only, EWS types
+// its bodies explicitly and keeps plain text as plain text.
+type Body struct {
+	Content string
+	HTML    bool
+}
+
+// IsHTML reports whether the content must be treated as HTML — either the
+// author said so (--html) or the body visibly opens with a tag.
+func (b Body) IsHTML() bool { return b.HTML || LooksLikeHTML(b.Content) }
+
+// AsHTML returns the content ready for an HTML sink: verbatim when it already
+// is HTML, converted from plain text otherwise.
+func (b Body) AsHTML() string {
+	if b.IsHTML() {
+		return b.Content
 	}
-	return TextToHTML(body)
+	return TextToHTML(b.Content)
 }

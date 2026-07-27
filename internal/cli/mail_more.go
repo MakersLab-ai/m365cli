@@ -2,14 +2,12 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 
 	"github.com/spf13/cobra"
 
-	"github.com/MakersLab-ai/m365cli/internal/graph"
+	"github.com/MakersLab-ai/m365cli/internal/backend"
 	"github.com/MakersLab-ai/m365cli/internal/mail"
 	"github.com/MakersLab-ai/m365cli/internal/output"
 )
@@ -26,37 +24,26 @@ func newMailReplyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			body, err := readBodyFile(bodyFile)
+			text, err := readBodyFile(bodyFile)
 			if err != nil {
 				return err
 			}
-			noteAutoHTML(body, asHTML)
+			noteAutoHTML(text, asHTML)
+			body := mail.Body{Content: text, HTML: asHTML}
 			id := args[0]
 
 			// Determine who the reply would reach, then apply the send guardrail.
-			msgJSON, err := client.GetForMailbox(cmd.Context(), mbx, "messages/"+url.PathEscape(id)+"?$select=from,toRecipients,ccRecipients")
-			if err != nil {
-				return err
-			}
-			recipients, err := mail.ReplyRecipients(msgJSON, replyAll)
+			recipients, err := client.Mail().ReplyContext(cmd.Context(), mbx, id, replyAll)
 			if err != nil {
 				return err
 			}
 
 			if plan := mail.PlanSend(cfg, recipients); plan.Action == mail.DraftOnly {
 				fmt.Fprintf(os.Stderr, "send guardrail: %v not in send_allow — saving as reply-draft for review\n", plan.Blocked)
-				return createReplyDraft(cmd.Context(), client, mbx, id, body, replyAll, asHTML, plan.Blocked)
+				return createReplyDraft(cmd.Context(), client, mbx, id, body, replyAll, plan.Blocked)
 			}
 
-			payload, err := mail.BuildReplyComment(body, asHTML)
-			if err != nil {
-				return err
-			}
-			action := "reply"
-			if replyAll {
-				action = "replyAll"
-			}
-			if _, err := client.PostForMailbox(cmd.Context(), mbx, "messages/"+url.PathEscape(id)+"/"+action, payload); err != nil {
+			if err := client.Mail().Reply(cmd.Context(), mbx, id, body, replyAll); err != nil {
 				return err
 			}
 			return output.WriteJSON(os.Stdout, map[string]any{"sent": true, "mailbox": mbx, "replyAll": replyAll, "to": recipients})
@@ -69,32 +56,15 @@ func newMailReplyCmd() *cobra.Command {
 	return cmd
 }
 
-// createReplyDraft creates a draft reply (createReply/createReplyAll) and sets
-// its body via PATCH, leaving it unsent for human review.
-func createReplyDraft(ctx context.Context, client *graph.Client, mbx, id, body string, replyAll, asHTML bool, blocked []string) error {
-	create := "createReply"
-	if replyAll {
-		create = "createReplyAll"
-	}
-	draftJSON, err := client.PostForMailbox(ctx, mbx, "messages/"+url.PathEscape(id)+"/"+create, nil)
+// createReplyDraft creates a draft reply (createReply/createReplyAll) with its
+// body set, leaving it unsent for human review.
+func createReplyDraft(ctx context.Context, client backend.Backend, mbx, id string, body mail.Body, replyAll bool, blocked []string) error {
+	draftID, err := client.Mail().CreateReplyDraft(ctx, mbx, id, body, replyAll)
 	if err != nil {
-		return err
-	}
-	var draft struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(draftJSON, &draft); err != nil || draft.ID == "" {
-		return fmt.Errorf("create reply draft: unexpected response: %s", string(draftJSON))
-	}
-	patch, err := mail.BuildReplyBodyPatch(body, asHTML)
-	if err != nil {
-		return err
-	}
-	if _, err := client.PatchForMailbox(ctx, mbx, "messages/"+url.PathEscape(draft.ID), patch); err != nil {
 		return err
 	}
 	return output.WriteJSON(os.Stdout, map[string]any{
-		"sent": false, "draft": true, "draft_id": draft.ID, "mailbox": mbx,
+		"sent": false, "draft": true, "draft_id": draftID, "mailbox": mbx,
 		"blocked": blocked, "draftReason": "recipients outside send_allow",
 	})
 }
@@ -110,8 +80,11 @@ func newMailAttachmentsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			suffix := "messages/" + url.PathEscape(args[0]) + "/attachments?$select=id,name,contentType,size"
-			return emitGraphValue(cmd.Context(), client, mbx, suffix)
+			data, err := client.Mail().Attachments(cmd.Context(), mbx, args[0])
+			if err != nil {
+				return err
+			}
+			return emitData(data)
 		},
 	}
 	cmd.Flags().StringVar(&mailbox, "mailbox", "", "mailbox to operate on (defaults to default_mailbox)")
@@ -129,13 +102,12 @@ func newMailGetAttachmentCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			suffix := "messages/" + url.PathEscape(args[0]) + "/attachments/" + url.PathEscape(args[1])
-			body, err := client.GetForMailbox(cmd.Context(), mbx, suffix)
+			body, err := client.Mail().GetAttachment(cmd.Context(), mbx, args[0], args[1])
 			if err != nil {
 				return err
 			}
 			if out == "" {
-				return output.WriteJSON(os.Stdout, json.RawMessage(body))
+				return emitData(body)
 			}
 			name, content, err := mail.DecodeAttachment(body)
 			if err != nil {

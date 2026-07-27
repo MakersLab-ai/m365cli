@@ -65,13 +65,29 @@ func TestLooksLikeHTMLLeavesProseAlone(t *testing.T) {
 }
 
 func TestTextToHTMLNotAppliedToBodiesThatAreAlreadyHTML(t *testing.T) {
-	// asHTML is the single decision point: an HTML body must never be escaped,
-	// with or without the --html flag.
-	body := "<html><body><p>Hallo</p></body></html>"
-	if got := asHTML(body, false); got != body {
-		t.Errorf("asHTML auto-detect = %q, want verbatim", got)
+	// Body.AsHTML is the single decision point: an HTML body must never be
+	// escaped, with or without the --html flag.
+	content := "<html><body><p>Hallo</p></body></html>"
+	if got := (Body{Content: content}).AsHTML(); got != content {
+		t.Errorf("AsHTML auto-detect = %q, want verbatim", got)
 	}
-	if got := asHTML(body, true); got != body {
-		t.Errorf("asHTML explicit = %q, want verbatim", got)
+	if got := (Body{Content: content, HTML: true}).AsHTML(); got != content {
+		t.Errorf("AsHTML explicit = %q, want verbatim", got)
+	}
+}
+
+func TestBodyIsHTMLFollowsFlagOrShape(t *testing.T) {
+	cases := []struct {
+		body Body
+		want bool
+	}{
+		{Body{Content: "Hallo,\n\ndanke."}, false},
+		{Body{Content: "Hallo,\n\ndanke.", HTML: true}, true}, // author states it
+		{Body{Content: "<p>Hallo</p>"}, true},                 // safety net
+	}
+	for _, c := range cases {
+		if got := c.body.IsHTML(); got != c.want {
+			t.Errorf("Body%+v.IsHTML() = %v, want %v", c.body, got, c.want)
+		}
 	}
 }

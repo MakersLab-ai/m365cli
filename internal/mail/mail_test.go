@@ -47,7 +47,7 @@ func TestPlanSendHonoursDomainGlob(t *testing.T) {
 func TestBuildMessagePayloadShape(t *testing.T) {
 	payload, err := BuildMessage(Message{
 		Subject: "Hi",
-		Body:    "Hello world",
+		Body:    Body{Content: "Hello world"},
 		To:      []string{"a@p.com"},
 		Cc:      []string{"c@p.com"},
 	})
@@ -76,7 +76,7 @@ func TestBuildMessagePayloadShape(t *testing.T) {
 }
 
 func TestBuildSendMailPayloadWrapsMessageAndSaves(t *testing.T) {
-	payload, err := BuildSendMail(Message{Subject: "S", Body: "B", To: []string{"a@p.com"}})
+	payload, err := BuildSendMail(Message{Subject: "S", Body: Body{Content: "B"}, To: []string{"a@p.com"}})
 	if err != nil {
 		t.Fatalf("BuildSendMail: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestBuildSendMailPayloadWrapsMessageAndSaves(t *testing.T) {
 }
 
 func TestBuildMessageRequiresRecipient(t *testing.T) {
-	if _, err := BuildMessage(Message{Subject: "S", Body: "B"}); err == nil {
+	if _, err := BuildMessage(Message{Subject: "S", Body: Body{Content: "B"}}); err == nil {
 		t.Error("BuildMessage must reject a message with no recipients")
 	}
 }
@@ -152,7 +152,7 @@ func TestDecodeAttachmentRejectsMissingContent(t *testing.T) {
 func TestBuildReplyCommentConvertsPlainTextToHTML(t *testing.T) {
 	// Graph injects `comment` into the reply's HTML body, so a plain-text
 	// comment loses every line break. Convert before handing it over.
-	payload, err := BuildReplyComment("Hallo Sandra,\n\ndanke dir.", false)
+	payload, err := BuildReplyComment(Body{Content: "Hallo Sandra,\n\ndanke dir."})
 	if err != nil {
 		t.Fatalf("BuildReplyComment: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestBuildReplyCommentConvertsPlainTextToHTML(t *testing.T) {
 }
 
 func TestBuildReplyCommentPassesHTMLThrough(t *testing.T) {
-	payload, err := BuildReplyComment("<p>Hallo</p>", true)
+	payload, err := BuildReplyComment(Body{Content: "<p>Hallo</p>", HTML: true})
 	if err != nil {
 		t.Fatalf("BuildReplyComment: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestBuildReplyCommentPassesHTMLThrough(t *testing.T) {
 }
 
 func TestBuildMessageMarksHTMLBodies(t *testing.T) {
-	payload, err := BuildMessage(Message{Subject: "Hi", Body: "<p>Hello</p>", To: []string{"a@p.com"}, HTML: true})
+	payload, err := BuildMessage(Message{Subject: "Hi", Body: Body{Content: "<p>Hello</p>", HTML: true}, To: []string{"a@p.com"}})
 	if err != nil {
 		t.Fatalf("BuildMessage: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestBuildMessageMarksHTMLBodies(t *testing.T) {
 func TestBuildReplyBodyPatchIsAlwaysHTML(t *testing.T) {
 	// The reply draft Graph hands back is an HTML message; patching it with a
 	// Text body collapses the text into a single paragraph.
-	payload, err := BuildReplyBodyPatch("eins\nzwei", false)
+	payload, err := BuildReplyBodyPatch(Body{Content: "eins\nzwei"})
 	if err != nil {
 		t.Fatalf("BuildReplyBodyPatch: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestBuildMessageSendsDetectedHTMLAsHTML(t *testing.T) {
 	// it went out as contentType Text, and the recipient read the tags.
 	payload, err := BuildMessage(Message{
 		Subject: "Ihre Praktikumsanfrage",
-		Body:    "<html><body>\n<p>Sehr geehrte Frau Marko,</p>\n</body></html>",
+		Body:    Body{Content: "<html><body>\n<p>Sehr geehrte Frau Marko,</p>\n</body></html>"},
 		To:      []string{"a@p.com"},
 	})
 	if err != nil {
@@ -236,7 +236,7 @@ func TestBuildMessageSendsDetectedHTMLAsHTML(t *testing.T) {
 }
 
 func TestBuildMessageKeepsProseAsText(t *testing.T) {
-	payload, err := BuildMessage(Message{Subject: "Hi", Body: "Hallo,\n\ndanke.", To: []string{"a@p.com"}})
+	payload, err := BuildMessage(Message{Subject: "Hi", Body: Body{Content: "Hallo,\n\ndanke."}, To: []string{"a@p.com"}})
 	if err != nil {
 		t.Fatalf("BuildMessage: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestBuildMessageKeepsProseAsText(t *testing.T) {
 func TestBuildReplyCommentKeepsHTMLFragmentUnescaped(t *testing.T) {
 	// Agents learned to hand-write HTML fragments for replies. Escaping those
 	// now would show tags where the old behaviour accidentally rendered.
-	payload, err := BuildReplyComment("<p>Hallo Sandra,</p><p>danke dir.</p>", false)
+	payload, err := BuildReplyComment(Body{Content: "<p>Hallo Sandra,</p><p>danke dir.</p>"})
 	if err != nil {
 		t.Fatalf("BuildReplyComment: %v", err)
 	}

@@ -51,14 +51,12 @@ func PlanSend(cfg *config.Config, recipients []string) SendPlan {
 	return SendPlan{Action: SendDirect}
 }
 
-// Message is a message to compose. Body is plain text unless HTML is set, in
-// which case it is handed to Graph as an HTML body verbatim.
+// Message is a message to compose.
 type Message struct {
 	Subject string
-	Body    string
+	Body    Body
 	To      []string
 	Cc      []string
-	HTML    bool
 }
 
 type emailAddress struct {
@@ -97,10 +95,10 @@ func toGraph(m Message) (graphMessage, error) {
 		CcRecipients: recipients(m.Cc),
 	}
 	gm.Body.ContentType = "Text"
-	if m.HTML || LooksLikeHTML(m.Body) {
+	if m.Body.IsHTML() {
 		gm.Body.ContentType = "HTML"
 	}
-	gm.Body.Content = m.Body
+	gm.Body.Content = m.Body.Content
 	return gm, nil
 }
 
@@ -167,18 +165,18 @@ func ReplyRecipients(messageJSON []byte, replyAll bool) ([]string, error) {
 // BuildReplyComment renders the {comment} payload for reply / replyAll. Graph
 // splices the comment into the HTML body of the reply, so a plain-text body is
 // converted first — otherwise every line break is lost on the way out.
-func BuildReplyComment(body string, isHTML bool) ([]byte, error) {
+func BuildReplyComment(body Body) ([]byte, error) {
 	return json.Marshal(struct {
 		Comment string `json:"comment"`
-	}{Comment: asHTML(body, isHTML)})
+	}{Comment: body.AsHTML()})
 }
 
 // BuildReplyBodyPatch renders the PATCH payload that fills a reply draft
 // created via createReply / createReplyAll. That draft is an HTML message
 // (it carries the quoted original), so the body is always written as HTML.
-func BuildReplyBodyPatch(body string, isHTML bool) ([]byte, error) {
+func BuildReplyBodyPatch(body Body) ([]byte, error) {
 	return json.Marshal(map[string]any{
-		"body": map[string]string{"contentType": "HTML", "content": asHTML(body, isHTML)},
+		"body": map[string]string{"contentType": "HTML", "content": body.AsHTML()},
 	})
 }
 

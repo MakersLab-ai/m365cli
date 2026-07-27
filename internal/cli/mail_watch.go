@@ -52,12 +52,12 @@ func newMailWatchPollCmd() *cobra.Command {
 				return err
 			}
 
-			client, err := newGraphClient(cfg)
+			be, err := newBackend(cfg)
 			if err != nil {
 				return err
 			}
 			syncer := &watch.Syncer{
-				Graph: client,
+				Graph: be.Mail(),
 				Hook:  watch.NewHookClient(hookURL, hookToken),
 				Store: watch.NewFileStore(filepath.Join(filepath.Dir(flags.configPath), "watch")),
 				Opts: watch.Options{
