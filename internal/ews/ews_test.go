@@ -2,6 +2,7 @@ package ews
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -81,6 +82,44 @@ func TestFindInboxParsesAndImpersonates(t *testing.T) {
 	if it.ID != "AAA=" || it.Subject != "Quarterly report" || it.From.Name != "Jane Doe" ||
 		it.Received != "2026-06-28T14:03:22Z" || it.IsRead {
 		t.Errorf("parsed item wrong: %+v", it)
+	}
+}
+
+// TestNTLMTransportStaysHTTP11 pins the transport to HTTP/1.1. NTLM binds its
+// handshake to one TCP connection, so an h2 upgrade turns every EWS call into a
+// bare 401 (this is how the Kausl on-prem connection failed for ten days). The
+// control case proves the assertion has teeth: against the same h2-capable
+// server, a transport without the pin does negotiate HTTP/2.
+func TestNTLMTransportStaysHTTP11(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+
+	// httptest's own client trusts the test cert and forces h2 — reuse its roots.
+	h2 := srv.Client().Transport.(*http.Transport)
+	roots := h2.TLSClientConfig.RootCAs
+
+	proto := func(t *testing.T, tr *http.Transport) string {
+		t.Helper()
+		resp, err := (&http.Client{Transport: tr}).Get(srv.URL)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.Proto
+	}
+
+	if got := proto(t, h2); got != "HTTP/2.0" {
+		t.Fatalf("control: unpinned transport spoke %s, want HTTP/2.0 — test server is not h2-capable, so the real assertion below proves nothing", got)
+	}
+
+	tr := ntlmTransport()
+	tr.TLSClientConfig = &tls.Config{RootCAs: roots}
+	if got := proto(t, tr); got != "HTTP/1.1" {
+		t.Errorf("ntlmTransport spoke %s, want HTTP/1.1 — NTLM cannot complete over HTTP/2", got)
 	}
 }
 

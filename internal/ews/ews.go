@@ -11,6 +11,7 @@ package ews
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -50,8 +51,22 @@ func NewNTLMClient() *http.Client {
 	return &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: ntlmssp.Negotiator{
-			RoundTripper: &http.Transport{},
+			RoundTripper: ntlmTransport(),
 		},
+	}
+}
+
+// ntlmTransport builds the underlying transport for NTLM. It MUST stay pinned to
+// HTTP/1.1: the NTLM handshake is bound to a single TCP connection (challenge on
+// the 401, response on the retry), which HTTP/2 multiplexing cannot express — over
+// h2 the server never honours the type-3 message and every request dies as a bare
+// 401. Exchange offers h2 via ALPN and a zero-value &http.Transport{} auto-upgrades
+// to it, so the pin is what makes NTLM work at all (this is why curl, which drops
+// to HTTP/1.1 for NTLM, succeeds where we used to fail). A non-nil empty
+// TLSNextProto is the documented way to disable HTTP/2 on a Transport.
+func ntlmTransport() *http.Transport {
+	return &http.Transport{
+		TLSNextProto: map[string]func(string, *tls.Conn) http.RoundTripper{},
 	}
 }
 
@@ -83,7 +98,10 @@ func (c *Client) post(ctx context.Context, body []byte) (*envelope, error) {
 
 	// A plain NTLM auth failure is a bodyless 401; surface it distinctly.
 	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("ews auth failed (401) for user %q — check ews_user / ews_password_file and impersonation rights", c.User)
+		// Credentials only — a rejected impersonation is a soap:Fault
+		// (ErrorImpersonateUserDenied) below, never a 401. Naming it here sent a
+		// real diagnosis down the wrong path for days.
+		return nil, fmt.Errorf("ews auth failed (401) for user %q — check ews_user (DOMAIN\\user) and ews_password_file", c.User)
 	}
 
 	var env envelope
