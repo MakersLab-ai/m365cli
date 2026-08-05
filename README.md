@@ -142,6 +142,17 @@ Bodies are plain text by default, and the formatting survives on every path:
   looks at the opening of the body only, so a mail that merely mentions a tag
   stays plain text.
 
+- **A reply can be prepared instead of sent.** `m365 mail reply --draft` (with
+  `--reply-all` for Outlook's "Reply All") never sends: it creates the draft
+  Graph's `createReply`/`createReplyAll` builds, writes the answer **on top of**
+  the quoted original, and leaves thread, signatures and inline images below it
+  untouched. Without `--draft`, a reply whose recipients are all inside
+  `send_allow` goes out immediately — the draft is then only the guardrail's
+  fallback for outside recipients.
+- **Inline images survive.** `--inline-image cid=path` (repeatable, on `reply`
+  and `draft`) attaches a picture as an inline attachment, so an HTML body can
+  reference it as `<img src="cid:…">` — that is how a signature keeps its logos.
+
 Both backends honour this, each in its own terms: Graph needs the conversion
 described above, while EWS types every body explicitly and keeps a plain-text
 body plain (its line breaks survive as-is) — there it is the `BodyType` that has

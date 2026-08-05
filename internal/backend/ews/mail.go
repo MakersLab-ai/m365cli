@@ -97,6 +97,12 @@ func (m mailSvc) CreateReplyDraft(ctx context.Context, mailbox, id string, body 
 	return m.c.CreateReplyDraft(ctx, mailbox, id, outBody(body), replyAll)
 }
 
+// AddInlineImage is Graph-only for now: EWS attaches inline content through
+// CreateAttachment with its own ContentId semantics, which no caller needs yet.
+func (m mailSvc) AddInlineImage(context.Context, string, string, mail.InlineImage) error {
+	return backend.ErrUnsupported
+}
+
 func (m mailSvc) Attachments(ctx context.Context, mailbox, msgID string) ([]byte, error) {
 	atts, err := m.c.ListAttachments(ctx, mailbox, msgID)
 	if err != nil {

@@ -112,6 +112,15 @@ m365 mail draft --to person@contoso.com --subject "WIP" --body-file ./body.txt -
 m365 mail reply <message-id> --body-file ./reply.txt --json
 m365 mail reply <message-id> --reply-all --body-file ./reply.txt --json
 
+# "Allen antworten, aber nur als Entwurf speichern" — never sends, keeps the
+# quoted thread and its inline images, body arrives as HTML:
+m365 mail reply <message-id> --reply-all --draft --body-file ./reply.txt --json
+# → {"sent":false,"draft":true,"draft_id":"…","draftReason":"draft requested"}
+
+# Inline images (e.g. signature logos) referenced from the body as cid:
+m365 mail reply <message-id> --reply-all --draft --html --body-file ./reply.html \
+  --inline-image "logo@sig=./logo.png" --json
+
 m365 calendar create --subject "Sync" \
   --start 2026-06-10T10:00:00 --end 2026-06-10T10:30:00 \
   --attendee a@contoso.com --body-file ./agenda.txt --json
@@ -129,6 +138,12 @@ The send guardrail also applies to `reply`/`reply-all`: recipients are read from
 the original message, and if any is outside `send_allow` the result is a
 reply-draft, not a sent reply. The JSON envelope reports `sent`/`draft` and any
 `blocked` recipients.
+
+**Reply-draft as an intent, not an accident:** `--draft` always produces the
+draft, whoever the recipients are. Prefer it whenever a human is meant to review
+before sending — without it, a reply to recipients that are all inside
+`send_allow` goes out immediately. The draft keeps what Outlook's own "Reply
+All" keeps: the quoted thread below the answer, its inline images, HTML body.
 
 ## Discovery
 
