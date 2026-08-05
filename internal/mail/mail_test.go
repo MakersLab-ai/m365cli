@@ -197,7 +197,7 @@ func TestBuildMessageMarksHTMLBodies(t *testing.T) {
 func TestBuildReplyBodyPatchIsAlwaysHTML(t *testing.T) {
 	// The reply draft Graph hands back is an HTML message; patching it with a
 	// Text body collapses the text into a single paragraph.
-	payload, err := BuildReplyBodyPatch(Body{Content: "eins\nzwei"})
+	payload, err := BuildReplyBodyPatch(Body{Content: "eins\nzwei"}, "")
 	if err != nil {
 		t.Fatalf("BuildReplyBodyPatch: %v", err)
 	}

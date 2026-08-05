@@ -87,15 +87,23 @@ func (m mailSvc) CreateReplyDraft(ctx context.Context, mailbox, id string, body 
 		return "", err
 	}
 	var draft struct {
-		ID string `json:"id"`
+		ID   string `json:"id"`
+		Body struct {
+			Content string `json:"content"`
+		} `json:"body"`
 	}
 	if err := json.Unmarshal(draftJSON, &draft); err != nil || draft.ID == "" {
 		return "", fmt.Errorf("create reply draft: unexpected response: %s", string(draftJSON))
 	}
 	// The draft createReply hands back is an HTML message (it carries the quoted
 	// original), so the body is written as HTML — patching it as Text converts
-	// nothing and loses every line break.
-	patch, err := mail.BuildReplyBodyPatch(body)
+	// nothing and loses every line break. The quote is kept: the reply goes on
+	// top of it, the thread and its inline images stay below.
+	quoted := draft.Body.Content
+	if quoted == "" {
+		quoted = m.draftBody(ctx, mailbox, draft.ID)
+	}
+	patch, err := mail.BuildReplyBodyPatch(body, quoted)
 	if err != nil {
 		return "", err
 	}
@@ -103,6 +111,36 @@ func (m mailSvc) CreateReplyDraft(ctx context.Context, mailbox, id string, body 
 		return "", err
 	}
 	return draft.ID, nil
+}
+
+// draftBody reads a draft's body back. createReply answers with the full
+// message resource, so this is a fallback for a response that omits the body
+// projection: better one extra GET than a silently dropped thread.
+func (m mailSvc) draftBody(ctx context.Context, mailbox, id string) string {
+	raw, err := m.c.GetForMailbox(ctx, mailbox, "messages/"+url.PathEscape(id)+"?$select=body")
+	if err != nil {
+		return ""
+	}
+	var got struct {
+		Body struct {
+			Content string `json:"content"`
+		} `json:"body"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		return ""
+	}
+	return got.Body.Content
+}
+
+// AddInlineImage attaches an image to an existing draft and marks it inline, so
+// the body can reference it as <img src="cid:…">.
+func (m mailSvc) AddInlineImage(ctx context.Context, mailbox, msgID string, img mail.InlineImage) error {
+	payload, err := mail.BuildInlineAttachment(img)
+	if err != nil {
+		return err
+	}
+	_, err = m.c.PostForMailbox(ctx, mailbox, "messages/"+url.PathEscape(msgID)+"/attachments", payload)
+	return err
 }
 
 func (m mailSvc) Attachments(ctx context.Context, mailbox, msgID string) ([]byte, error) {

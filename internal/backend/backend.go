@@ -75,6 +75,11 @@ type MailService interface {
 	Reply(ctx context.Context, mailbox, id string, body mail.Body, replyAll bool) error
 	CreateReplyDraft(ctx context.Context, mailbox, id string, body mail.Body, replyAll bool) (draftID string, err error)
 
+	// AddInlineImage attaches an image to an existing draft and marks it
+	// inline, so the body can reference it as <img src="cid:…">. It is what
+	// makes a signature block with logos survive into a draft.
+	AddInlineImage(ctx context.Context, mailbox, msgID string, img mail.InlineImage) error
+
 	Attachments(ctx context.Context, mailbox, msgID string) ([]byte, error)
 	// GetAttachment returns the attachment resource JSON (the CLI decodes the
 	// base64 content when --out is given).

@@ -145,7 +145,7 @@ func newMailSendCmd() *cobra.Command {
 			plan := mail.PlanSend(cfg, recipients)
 			if plan.Action == mail.DraftOnly {
 				fmt.Fprintf(os.Stderr, "send guardrail: %v not in send_allow — saving as draft for review\n", plan.Blocked)
-				return createDraft(cmd.Context(), client, mbx, msg, plan.Blocked)
+				return createDraft(cmd.Context(), client, mbx, msg, plan.Blocked, nil)
 			}
 
 			if err := client.Mail().Send(cmd.Context(), mbx, msg); err != nil {
@@ -160,7 +160,7 @@ func newMailSendCmd() *cobra.Command {
 
 func newMailDraftCmd() *cobra.Command {
 	var mailbox, subject, bodyFile, cc string
-	var to []string
+	var to, inlineImages []string
 	var asHTML bool
 	cmd := &cobra.Command{
 		Use:   "draft --to <addr> --subject <s> --body-file <f>",
@@ -174,10 +174,15 @@ func newMailDraftCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return createDraft(cmd.Context(), client, mbx, msg, nil)
+			images, err := loadInlineImages(inlineImages)
+			if err != nil {
+				return err
+			}
+			return createDraft(cmd.Context(), client, mbx, msg, nil, images)
 		},
 	}
 	addComposeFlags(cmd, &mailbox, &subject, &bodyFile, &cc, &to, &asHTML)
+	cmd.Flags().StringArrayVar(&inlineImages, "inline-image", nil, "attach an inline image as cid=path, referenced from the body as <img src=\"cid:…\"> (repeatable)")
 	return cmd
 }
 
@@ -226,18 +231,22 @@ func composeMessage(subject, bodyFile string, to []string, cc string, asHTML boo
 	}, nil
 }
 
-func createDraft(ctx context.Context, client backend.Backend, mbx string, msg mail.Message, blocked []string) error {
+func createDraft(ctx context.Context, client backend.Backend, mbx string, msg mail.Message, blocked []string, images []mail.InlineImage) error {
 	id, err := client.Mail().CreateDraft(ctx, mbx, msg)
 	if err != nil {
 		return err
 	}
+	if err := attachInlineImages(ctx, client, mbx, id, images); err != nil {
+		return err
+	}
 	return output.WriteJSON(os.Stdout, map[string]any{
-		"sent":        false,
-		"draft":       true,
-		"draft_id":    id,
-		"mailbox":     mbx,
-		"blocked":     blocked,
-		"draftReason": draftReason(blocked),
+		"sent":         false,
+		"draft":        true,
+		"draft_id":     id,
+		"mailbox":      mbx,
+		"blocked":      blocked,
+		"draftReason":  draftReason(blocked),
+		"inlineImages": len(images),
 	})
 }
 

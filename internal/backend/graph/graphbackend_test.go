@@ -49,6 +49,28 @@ func newBackend(t *testing.T, cfg *config.Config, cap *capture, status int, resp
 	return graphbackend.New(c)
 }
 
+// newBackendRecording is newBackend plus the full call sequence, for flows that
+// make more than one request (create then patch).
+func newBackendRecording(t *testing.T, cfg *config.Config, cap *capture, status int, resp string, uris *[]string) backend.Backend {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cap.method = r.Method
+		cap.uri = r.URL.RequestURI()
+		*uris = append(*uris, r.URL.RequestURI())
+		buf := make([]byte, r.ContentLength)
+		if r.ContentLength > 0 {
+			_, _ = r.Body.Read(buf)
+			cap.body = string(buf)
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(resp))
+	}))
+	t.Cleanup(srv.Close)
+	c := graph.New(cfg, fakeToken{})
+	c.BaseURL = srv.URL
+	return graphbackend.New(c)
+}
+
 func mailboxCfg() *config.Config {
 	return &config.Config{AllowedMailboxes: []string{mbx}}
 }
@@ -363,5 +385,67 @@ func TestMailCreateReplyDraftPatchesBodyAsHTML(t *testing.T) {
 	}
 	if patch.Body.ContentType != "HTML" || patch.Body.Content != "<p>eins<br>zwei</p>" {
 		t.Errorf("patch body = %+v, want an HTML body with the line break kept", patch.Body)
+	}
+}
+
+// --- reply-draft keeps the quoted thread (GC 975b01a9) ---
+
+func TestMailCreateReplyDraftKeepsQuotedOriginal(t *testing.T) {
+	// createReply answers with the draft INCLUDING the quoted original. Patching
+	// the body with the reply alone deletes that quote — thread and inline
+	// images gone. The reply belongs on top of it.
+	var cap capture
+	created := `{"id":"DRAFT-9","body":{"contentType":"html","content":"<html><body><div>Von: Julian</div><img src=\"cid:image001.png\"></body></html>"}}`
+	be := newBackend(t, mailboxCfg(), &cap, http.StatusCreated, created)
+
+	if _, err := be.Mail().CreateReplyDraft(context.Background(), mbx, "MSG-1", mail.Body{Content: "Danke!"}, true); err != nil {
+		t.Fatalf("CreateReplyDraft: %v", err)
+	}
+	var patch struct {
+		Body struct {
+			ContentType string `json:"contentType"`
+			Content     string `json:"content"`
+		} `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(cap.body), &patch); err != nil {
+		t.Fatalf("patch not JSON: %v (%s)", err, cap.body)
+	}
+	want := `<html><body><p>Danke!</p><div>Von: Julian</div><img src="cid:image001.png"></body></html>`
+	if patch.Body.Content != want {
+		t.Errorf("patch content = %q,\nwant %q", patch.Body.Content, want)
+	}
+}
+
+func TestMailCreateReplyDraftUsesReplyAllEndpoint(t *testing.T) {
+	// The customer's requirement is literally Outlook's "Reply All" button.
+	var cap capture
+	var uris []string
+	be := newBackendRecording(t, mailboxCfg(), &cap, http.StatusCreated, `{"id":"DRAFT-9","body":{"content":"<html><body>q</body></html>"}}`, &uris)
+
+	if _, err := be.Mail().CreateReplyDraft(context.Background(), mbx, "MSG-1", mail.Body{Content: "ok"}, true); err != nil {
+		t.Fatalf("CreateReplyDraft: %v", err)
+	}
+	if uris[0] != "/users/agent@example.com/messages/MSG-1/createReplyAll" {
+		t.Errorf("first call = %q, want createReplyAll", uris[0])
+	}
+}
+
+func TestMailAddInlineImagePostsInlineAttachment(t *testing.T) {
+	var cap capture
+	be := newBackend(t, mailboxCfg(), &cap, http.StatusCreated, `{"id":"ATT-1"}`)
+
+	img := mail.InlineImage{Name: "logo.png", ContentID: "image001.png@01DD", ContentType: "image/png", Data: []byte("PNG")}
+	if err := be.Mail().AddInlineImage(context.Background(), mbx, "DRAFT-9", img); err != nil {
+		t.Fatalf("AddInlineImage: %v", err)
+	}
+	if cap.uri != "/users/agent@example.com/messages/DRAFT-9/attachments" {
+		t.Errorf("attachment uri = %q", cap.uri)
+	}
+	var att map[string]any
+	if err := json.Unmarshal([]byte(cap.body), &att); err != nil {
+		t.Fatalf("attachment payload not JSON: %v (%s)", err, cap.body)
+	}
+	if att["isInline"] != true || att["contentId"] != "image001.png@01DD" {
+		t.Errorf("attachment = %v, want an inline attachment carrying the cid", att)
 	}
 }

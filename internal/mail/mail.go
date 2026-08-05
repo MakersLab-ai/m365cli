@@ -174,9 +174,16 @@ func BuildReplyComment(body Body) ([]byte, error) {
 // BuildReplyBodyPatch renders the PATCH payload that fills a reply draft
 // created via createReply / createReplyAll. That draft is an HTML message
 // (it carries the quoted original), so the body is always written as HTML.
-func BuildReplyBodyPatch(body Body) ([]byte, error) {
+//
+// quoted is the body the draft already has. The reply is spliced in above it
+// instead of replacing it — that quote IS the thread, including its inline
+// images. Pass "" only when there is demonstrably nothing to keep.
+func BuildReplyBodyPatch(body Body, quoted string) ([]byte, error) {
 	return json.Marshal(map[string]any{
-		"body": map[string]string{"contentType": "HTML", "content": body.AsHTML()},
+		"body": map[string]string{
+			"contentType": "HTML",
+			"content":     SpliceIntoQuoted(body.AsHTML(), quoted),
+		},
 	})
 }
 
