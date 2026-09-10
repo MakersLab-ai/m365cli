@@ -68,7 +68,7 @@ func syncEnvelope(mailbox, syncState string, max int) []byte {
 		`<t:FieldURI FieldURI="message:ToRecipients"/>` +
 		`<t:FieldURI FieldURI="item:DateTimeReceived"/>` +
 		`<t:FieldURI FieldURI="message:IsRead"/>` +
-		`<t:FieldURI FieldURI="message:ConversationId"/>` +
+		`<t:FieldURI FieldURI="item:ConversationId"/>` +
 		`<t:FieldURI FieldURI="item:Body"/>` +
 		`</t:AdditionalProperties></m:ItemShape>` +
 		`<m:SyncFolderId><t:DistinguishedFolderId Id="inbox"/></m:SyncFolderId>`)
