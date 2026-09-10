@@ -240,6 +240,14 @@ func TestSyncInboxFirstRunNoSyncState(t *testing.T) {
 	if !strings.Contains(*body, `<m:MaxChangesReturned>512</m:MaxChangesReturned>`) {
 		t.Errorf("MaxChangesReturned required: %s", *body)
 	}
+	// ConversationId lives in the item: namespace. "message:ConversationId" is
+	// not a FieldURI; Exchange 2019 rejects the whole request with a bare
+	// ErrorInvalidRequest ("The request is invalid."), so the watcher never
+	// completed a single poll (Kausl, 2026-09-10).
+	if !strings.Contains(*body, `<t:FieldURI FieldURI="item:ConversationId"/>`) ||
+		strings.Contains(*body, `message:ConversationId`) {
+		t.Errorf("ConversationId must be requested as item:ConversationId: %s", *body)
+	}
 	if page.SyncState != "STATE-2" || page.More {
 		t.Errorf("page state wrong: %+v", page)
 	}
