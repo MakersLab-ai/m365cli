@@ -125,6 +125,15 @@ m365 calendar create --subject "Sync" \
   --start 2026-06-10T10:00:00 --end 2026-06-10T10:30:00 \
   --attendee a@contoso.com --body-file ./agenda.txt --json
 m365 calendar update <event-id> --subject "Renamed" --json   # only given fields change
+
+# All-day events (Outlook "Ganztägig" — shown as a header, no time of day).
+# --start/--end are DATES; --end is the last day (inclusive) and optional.
+# Always pass the user's time zone, or the day can shift in Outlook:
+m365 calendar create --subject "Urlaub" --all-day \
+  --start 2026-06-10 --end 2026-06-12 --timezone "Europe/Vienna" --json
+m365 calendar update <event-id> --all-day --start 2026-06-10 --timezone "Europe/Vienna" --json
+m365 calendar update <event-id> --all-day=false \
+  --start 2026-06-10T09:00:00 --end 2026-06-10T10:00:00 --timezone "Europe/Vienna" --json
 m365 calendar delete <event-id> --json
 
 m365 contacts add --email ada@contoso.com --given Ada --surname Lovelace --json

@@ -3,6 +3,7 @@ package ewsbackend
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/MakersLab-ai/m365cli/internal/backend"
@@ -72,6 +73,9 @@ func (s calSvc) Get(ctx context.Context, mailbox, id string) ([]byte, error) {
 }
 
 func (s calSvc) Create(ctx context.Context, mailbox string, ev calendar.Event) ([]byte, error) {
+	if ev.AllDay != nil {
+		return nil, errAllDay
+	}
 	id, err := s.c.CreateEvent(ctx, mailbox, eventInput(ev))
 	if err != nil {
 		return nil, err
@@ -80,6 +84,9 @@ func (s calSvc) Create(ctx context.Context, mailbox string, ev calendar.Event) (
 }
 
 func (s calSvc) Update(ctx context.Context, mailbox, id string, ev calendar.Event) ([]byte, error) {
+	if ev.AllDay != nil {
+		return nil, errAllDay
+	}
 	newID, err := s.c.UpdateEvent(ctx, mailbox, id, eventInput(ev))
 	if err != nil {
 		return nil, err
@@ -90,6 +97,11 @@ func (s calSvc) Update(ctx context.Context, mailbox, id string, ev calendar.Even
 func (s calSvc) Delete(ctx context.Context, mailbox, id string) error {
 	return s.c.DeleteEvent(ctx, mailbox, id)
 }
+
+// errAllDay: this backend sends wall-clock times as UTC, so an all-day item
+// would start at UTC midnight and land on the wrong day for any other zone.
+// Deferred until EWS events carry a StartTimeZone.
+var errAllDay = fmt.Errorf("--all-day: %w (ews backend)", backend.ErrUnsupported)
 
 // FreeBusy and FindTimes require the EWS GetUserAvailability availability
 // service (a full timezone-bias block + suggestions polymorphism). Deferred —

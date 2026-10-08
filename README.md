@@ -10,6 +10,7 @@ Made by [makerslab.ai](https://makerslab.ai).
 ```bash
 m365 mail list --mailbox agent@contoso.com --json
 m365 calendar create --subject "Sync" --start 2026-06-10T10:00:00 --end 2026-06-10T10:30:00
+m365 calendar create --subject "Urlaub" --all-day --start 2026-06-10 --end 2026-06-12 --timezone Europe/Vienna
 m365 drive ls --json
 ```
 

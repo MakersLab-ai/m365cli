@@ -164,3 +164,126 @@ func TestBuildFindMeetingTimesRequiresAttendeesAndDuration(t *testing.T) {
 		t.Error("findMeetingTimes must require a meeting duration")
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }
+
+func decode(t *testing.T, payload []byte) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	return m
+}
+
+func dt(m map[string]any, key string) (string, string) {
+	v, _ := m[key].(map[string]any)
+	d, _ := v["dateTime"].(string)
+	z, _ := v["timeZone"].(string)
+	return d, z
+}
+
+func TestBuildEventAllDaySingleDayDefaultsEndToNextMidnight(t *testing.T) {
+	payload, err := BuildEvent(Event{Subject: "Urlaub", Start: "2026-06-10", TimeZone: "Europe/Vienna", AllDay: boolPtr(true)})
+	if err != nil {
+		t.Fatalf("BuildEvent: %v", err)
+	}
+	m := decode(t, payload)
+	if m["isAllDay"] != true {
+		t.Errorf("isAllDay = %v", m["isAllDay"])
+	}
+	if d, z := dt(m, "start"); d != "2026-06-10T00:00:00" || z != "Europe/Vienna" {
+		t.Errorf("start = %s %s", d, z)
+	}
+	if d, z := dt(m, "end"); d != "2026-06-11T00:00:00" || z != "Europe/Vienna" {
+		t.Errorf("end = %s %s", d, z)
+	}
+}
+
+func TestBuildEventAllDayDateOnlyEndIsInclusiveLastDay(t *testing.T) {
+	payload, err := BuildEvent(Event{Subject: "Messe", Start: "2026-06-10", End: "2026-06-12", AllDay: boolPtr(true)})
+	if err != nil {
+		t.Fatalf("BuildEvent: %v", err)
+	}
+	m := decode(t, payload)
+	if d, _ := dt(m, "end"); d != "2026-06-13T00:00:00" {
+		t.Errorf("end = %s, want exclusive midnight after the last day", d)
+	}
+}
+
+func TestBuildEventAllDayMidnightDateTimeEndIsExclusive(t *testing.T) {
+	payload, err := BuildEvent(Event{Subject: "Messe", Start: "2026-06-10T00:00:00", End: "2026-06-12T00:00:00", AllDay: boolPtr(true)})
+	if err != nil {
+		t.Fatalf("BuildEvent: %v", err)
+	}
+	m := decode(t, payload)
+	if d, _ := dt(m, "start"); d != "2026-06-10T00:00:00" {
+		t.Errorf("start = %s", d)
+	}
+	if d, _ := dt(m, "end"); d != "2026-06-12T00:00:00" {
+		t.Errorf("end = %s, Graph-style midnight end must pass through", d)
+	}
+}
+
+func TestBuildEventAllDayRejectsNonMidnightOrBackwards(t *testing.T) {
+	cases := []Event{
+		{Start: "2026-06-10T10:00:00", AllDay: boolPtr(true)},
+		{Start: "2026-06-10", End: "2026-06-10T12:00:00", AllDay: boolPtr(true)},
+		{Start: "2026-06-10", End: "2026-06-09", AllDay: boolPtr(true)},
+		{Start: "2026-06-10T00:00:00", End: "2026-06-10T00:00:00", AllDay: boolPtr(true)},
+		{Start: "10.06.2026", AllDay: boolPtr(true)},
+		{AllDay: boolPtr(true)},
+	}
+	for _, c := range cases {
+		if _, err := BuildEvent(c); err == nil {
+			t.Errorf("BuildEvent(%+v): expected error", c)
+		}
+	}
+}
+
+func TestBuildEventTimedHasNoIsAllDay(t *testing.T) {
+	payload, err := BuildEvent(Event{Start: "2026-06-10T10:00:00", End: "2026-06-10T11:00:00"})
+	if err != nil {
+		t.Fatalf("BuildEvent: %v", err)
+	}
+	if _, ok := decode(t, payload)["isAllDay"]; ok {
+		t.Error("timed event must not carry isAllDay")
+	}
+}
+
+func TestBuildEventPatchSwitchToAllDay(t *testing.T) {
+	payload, err := BuildEventPatch(Event{Start: "2026-06-10", AllDay: boolPtr(true)})
+	if err != nil {
+		t.Fatalf("BuildEventPatch: %v", err)
+	}
+	m := decode(t, payload)
+	if m["isAllDay"] != true {
+		t.Errorf("isAllDay = %v", m["isAllDay"])
+	}
+	if d, _ := dt(m, "start"); d != "2026-06-10T00:00:00" {
+		t.Errorf("start = %s", d)
+	}
+	if d, _ := dt(m, "end"); d != "2026-06-11T00:00:00" {
+		t.Errorf("end = %s", d)
+	}
+}
+
+func TestBuildEventPatchAllDayRequiresStart(t *testing.T) {
+	if _, err := BuildEventPatch(Event{AllDay: boolPtr(true)}); err == nil {
+		t.Error("switching to all-day without --start must fail (Graph needs midnight start/end in the same PATCH)")
+	}
+}
+
+func TestBuildEventPatchSwitchToTimed(t *testing.T) {
+	payload, err := BuildEventPatch(Event{Start: "2026-06-10T09:00:00", End: "2026-06-10T10:00:00", AllDay: boolPtr(false)})
+	if err != nil {
+		t.Fatalf("BuildEventPatch: %v", err)
+	}
+	m := decode(t, payload)
+	if v, ok := m["isAllDay"]; !ok || v != false {
+		t.Errorf("isAllDay = %v (present=%v), want explicit false", v, ok)
+	}
+	if d, _ := dt(m, "start"); d != "2026-06-10T09:00:00" {
+		t.Errorf("start = %s", d)
+	}
+}
