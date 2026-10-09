@@ -74,6 +74,7 @@ func newCalGetCmd() *cobra.Command {
 func newCalCreateCmd() *cobra.Command {
 	var mailbox, subject, start, end, tz, location, bodyFile string
 	var attendees []string
+	var allDay bool
 	cmd := &cobra.Command{
 		Use:   "create --subject <s> --start <t> --end <t>",
 		Short: "Create an event",
@@ -86,6 +87,7 @@ func newCalCreateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			ev.AllDay = allDayFlag(cmd, allDay)
 			data, err := client.Calendar().Create(cmd.Context(), mbx, ev)
 			if err != nil {
 				return err
@@ -93,13 +95,14 @@ func newCalCreateCmd() *cobra.Command {
 			return emitData(data)
 		},
 	}
-	addEventFlags(cmd, &mailbox, &subject, &start, &end, &tz, &location, &bodyFile, &attendees)
+	addEventFlags(cmd, &mailbox, &subject, &start, &end, &tz, &location, &bodyFile, &attendees, &allDay)
 	return cmd
 }
 
 func newCalUpdateCmd() *cobra.Command {
 	var mailbox, subject, start, end, tz, location, bodyFile string
 	var attendees []string
+	var allDay bool
 	cmd := &cobra.Command{
 		Use:   "update <event-id>",
 		Short: "Update fields of an event (only provided fields change)",
@@ -120,6 +123,7 @@ func newCalUpdateCmd() *cobra.Command {
 			ev := calendar.Event{
 				Subject: subject, Body: body, Start: start, End: end,
 				TimeZone: tz, Location: location, Attendees: attendees,
+				AllDay: allDayFlag(cmd, allDay),
 			}
 			data, err := client.Calendar().Update(cmd.Context(), mbx, args[0], ev)
 			if err != nil {
@@ -128,7 +132,7 @@ func newCalUpdateCmd() *cobra.Command {
 			return emitData(data)
 		},
 	}
-	addEventFlags(cmd, &mailbox, &subject, &start, &end, &tz, &location, &bodyFile, &attendees)
+	addEventFlags(cmd, &mailbox, &subject, &start, &end, &tz, &location, &bodyFile, &attendees, &allDay)
 	return cmd
 }
 
@@ -216,7 +220,7 @@ func newCalFindTimesCmd() *cobra.Command {
 
 // --- shared event helpers ---
 
-func addEventFlags(cmd *cobra.Command, mailbox, subject, start, end, tz, location, bodyFile *string, attendees *[]string) {
+func addEventFlags(cmd *cobra.Command, mailbox, subject, start, end, tz, location, bodyFile *string, attendees *[]string, allDay *bool) {
 	cmd.Flags().StringVar(mailbox, "mailbox", "", "mailbox to operate on (defaults to default_mailbox)")
 	cmd.Flags().StringVar(subject, "subject", "", "event subject")
 	cmd.Flags().StringVar(start, "start", "", "start time, e.g. 2026-06-10T10:00:00")
@@ -225,6 +229,17 @@ func addEventFlags(cmd *cobra.Command, mailbox, subject, start, end, tz, locatio
 	cmd.Flags().StringVar(location, "location", "", "event location")
 	cmd.Flags().StringVar(bodyFile, "body-file", "", "path to a file with the event body")
 	cmd.Flags().StringSliceVar(attendees, "attendee", nil, "attendee address (repeatable)")
+	cmd.Flags().BoolVar(allDay, "all-day", false, "all-day event: --start/--end are dates (2026-06-10), --end = last day, optional; "+
+		"--all-day=false on update turns it back into a timed event")
+}
+
+// allDayFlag maps --all-day to the event's tri-state: nil when the flag was
+// not given, so an update leaves isAllDay untouched.
+func allDayFlag(cmd *cobra.Command, v bool) *bool {
+	if !cmd.Flags().Changed("all-day") {
+		return nil
+	}
+	return &v
 }
 
 func eventFromFlags(subject, start, end, tz, location, bodyFile string, attendees []string) (calendar.Event, error) {

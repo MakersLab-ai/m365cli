@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/MakersLab-ai/m365cli/internal/backend"
 	graphbackend "github.com/MakersLab-ai/m365cli/internal/backend/graph"
+	"github.com/MakersLab-ai/m365cli/internal/calendar"
 	"github.com/MakersLab-ai/m365cli/internal/config"
 	"github.com/MakersLab-ai/m365cli/internal/graph"
 	"github.com/MakersLab-ai/m365cli/internal/mail"
@@ -233,6 +235,41 @@ func TestCalendarFreeBusyUnwraps(t *testing.T) {
 	}
 	if string(got) != `[{"scheduleId":"x"}]` {
 		t.Errorf("FreeBusy unwrap = %q", got)
+	}
+}
+
+func TestCalendarCreateAllDayPostsIsAllDay(t *testing.T) {
+	var cap capture
+	be := newBackend(t, mailboxCfg(), &cap, http.StatusCreated, `{"id":"e1"}`)
+	allDay := true
+	_, err := be.Calendar().Create(context.Background(), mbx, calendar.Event{
+		Subject: "Urlaub", Start: "2026-06-10", End: "2026-06-12", TimeZone: "Europe/Vienna", AllDay: &allDay,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if cap.method != http.MethodPost || cap.uri != "/users/agent@example.com/events" {
+		t.Errorf("Create hit %s %q", cap.method, cap.uri)
+	}
+	for _, want := range []string{`"isAllDay":true`, `"dateTime":"2026-06-10T00:00:00"`, `"dateTime":"2026-06-13T00:00:00"`, `"timeZone":"Europe/Vienna"`} {
+		if !strings.Contains(cap.body, want) {
+			t.Errorf("body %s missing %s", cap.body, want)
+		}
+	}
+}
+
+func TestCalendarUpdateBackToTimedPatchesIsAllDayFalse(t *testing.T) {
+	var cap capture
+	be := newBackend(t, mailboxCfg(), &cap, http.StatusOK, `{"id":"e1"}`)
+	timed := false
+	_, err := be.Calendar().Update(context.Background(), mbx, "e1", calendar.Event{
+		Start: "2026-06-10T09:00:00", End: "2026-06-10T10:00:00", AllDay: &timed,
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if cap.method != http.MethodPatch || !strings.Contains(cap.body, `"isAllDay":false`) {
+		t.Errorf("Update %s body %s, want PATCH with isAllDay:false", cap.method, cap.body)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/MakersLab-ai/m365cli/internal/backend"
 	ewsbackend "github.com/MakersLab-ai/m365cli/internal/backend/ews"
+	"github.com/MakersLab-ai/m365cli/internal/calendar"
 	"github.com/MakersLab-ai/m365cli/internal/config"
 	"github.com/MakersLab-ai/m365cli/internal/ews"
 	"github.com/MakersLab-ai/m365cli/internal/mail"
@@ -210,5 +211,18 @@ func TestAttachmentsEmitsGraphShape(t *testing.T) {
 	want := `[{"id":"ATT-1","name":"invoice.pdf","contentType":"application/pdf","size":48213}]`
 	if string(got) != want {
 		t.Errorf("attachments JSON mismatch\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func TestAllDayEventIsUnsupportedOnEWS(t *testing.T) {
+	be := newBackend(t, findItemSuccess)
+	ctx := context.Background()
+	allDay := true
+	ev := calendar.Event{Subject: "Urlaub", Start: "2026-06-10", AllDay: &allDay}
+	if _, err := be.Calendar().Create(ctx, mbx, ev); !errors.Is(err, backend.ErrUnsupported) {
+		t.Errorf("Calendar.Create all-day: want ErrUnsupported, got %v", err)
+	}
+	if _, err := be.Calendar().Update(ctx, mbx, "id", ev); !errors.Is(err, backend.ErrUnsupported) {
+		t.Errorf("Calendar.Update all-day: want ErrUnsupported, got %v", err)
 	}
 }

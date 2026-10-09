@@ -7,7 +7,7 @@ Graph cloud API. Select it with `backend = "ews"` in `config.toml`.
 > **Status: preview (validated against fixtures, not yet a live server).**
 > Implemented on EWS: **mail** (`list`, `read`, `search`, `send`, `draft`,
 > `reply`, `attachments`, `get-attachment`), **calendar** (`list`, `get`,
-> `create`, `update`, `delete`), and **`mail watch poll`** (via SyncFolderItems).
+> `create`, `update`, `delete` — not yet `--all-day`), and **`mail watch poll`** (via SyncFolderItems).
 > Not implemented: `calendar freebusy`/`find-times` (need the EWS
 > GetUserAvailability service — deferred), `contacts`, and `drive`/`sp`
 > (SharePoint/OneDrive are cloud-only and do not exist on on-premise Exchange).

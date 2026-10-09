@@ -6,6 +6,8 @@ package calendar
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
 )
 
 const defaultTimeZone = "UTC"
@@ -19,6 +21,9 @@ type Event struct {
 	TimeZone  string // IANA/Windows zone; defaults to UTC
 	Location  string
 	Attendees []string
+	// AllDay sets Graph's isAllDay. nil leaves it untouched (update) / timed
+	// (create). For true, Start/End are dates — see allDayRange.
+	AllDay *bool
 }
 
 type dateTimeZone struct {
@@ -35,7 +40,14 @@ type attendee struct {
 
 // BuildEvent renders a Graph event object for POST /events or PATCH /events/{id}.
 func BuildEvent(e Event) ([]byte, error) {
-	if e.Start == "" || e.End == "" {
+	allDay := e.AllDay != nil && *e.AllDay
+	if allDay {
+		start, end, err := allDayRange(e.Start, e.End)
+		if err != nil {
+			return nil, err
+		}
+		e.Start, e.End = start, end
+	} else if e.Start == "" || e.End == "" {
 		return nil, fmt.Errorf("event requires both --start and --end")
 	}
 	tz := e.TimeZone
@@ -47,6 +59,9 @@ func BuildEvent(e Event) ([]byte, error) {
 		"subject": e.Subject,
 		"start":   dateTimeZone{DateTime: e.Start, TimeZone: tz},
 		"end":     dateTimeZone{DateTime: e.End, TimeZone: tz},
+	}
+	if allDay {
+		out["isAllDay"] = true
 	}
 	if e.Body != "" {
 		out["body"] = map[string]string{"contentType": "Text", "content": e.Body}
@@ -68,6 +83,21 @@ func BuildEventPatch(e Event) ([]byte, error) {
 		tz = defaultTimeZone
 	}
 	out := map[string]any{}
+	if e.AllDay != nil {
+		if *e.AllDay {
+			// Graph rejects isAllDay=true unless start and end are midnight, so
+			// the switch must carry both — derived from the given dates.
+			if e.Start == "" {
+				return nil, fmt.Errorf("--all-day on update requires --start (the day; --end optional)")
+			}
+			start, end, err := allDayRange(e.Start, e.End)
+			if err != nil {
+				return nil, err
+			}
+			e.Start, e.End = start, end
+		}
+		out["isAllDay"] = *e.AllDay
+	}
 	if e.Subject != "" {
 		out["subject"] = e.Subject
 	}
@@ -90,6 +120,57 @@ func BuildEventPatch(e Event) ([]byte, error) {
 		return nil, fmt.Errorf("nothing to update: provide at least one field")
 	}
 	return json.Marshal(out)
+}
+
+const (
+	dateLayout     = "2006-01-02"
+	midnightSuffix = "T00:00:00"
+)
+
+// allDayRange turns all-day input into Graph's midnight-to-midnight range.
+// Start is a date (2026-06-10) or a midnight dateTime. End is optional (one
+// day); a date-only End is the inclusive last day (human "10. bis 12."), a
+// midnight dateTime End is Graph's exclusive end and passes through.
+func allDayRange(start, end string) (string, string, error) {
+	if start == "" {
+		return "", "", fmt.Errorf("all-day event requires --start (a date, e.g. 2026-06-10)")
+	}
+	s, _, err := parseAllDay("--start", start)
+	if err != nil {
+		return "", "", err
+	}
+	e := s.AddDate(0, 0, 1)
+	if end != "" {
+		d, dateOnly, err := parseAllDay("--end", end)
+		if err != nil {
+			return "", "", err
+		}
+		if dateOnly {
+			d = d.AddDate(0, 0, 1)
+		}
+		if !d.After(s) {
+			return "", "", fmt.Errorf("all-day --end must be after --start")
+		}
+		e = d
+	}
+	return s.Format(dateLayout) + midnightSuffix, e.Format(dateLayout) + midnightSuffix, nil
+}
+
+// parseAllDay accepts YYYY-MM-DD or YYYY-MM-DDT00:00:00[.000…] and reports
+// whether the value was date-only.
+func parseAllDay(flag, v string) (time.Time, bool, error) {
+	date, rest, hasTime := strings.Cut(v, "T")
+	d, err := time.Parse(dateLayout, date)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("all-day %s must be a date like 2026-06-10, got %q", flag, v)
+	}
+	if !hasTime {
+		return d, true, nil
+	}
+	if strings.Trim(strings.ReplaceAll(rest, ":", ""), "0.") != "" || !strings.HasPrefix(rest, "00:00") {
+		return time.Time{}, false, fmt.Errorf("all-day %s must be midnight (all-day events have no time of day), got %q", flag, v)
+	}
+	return d, false, nil
 }
 
 // BuildFindMeetingTimes renders the POST /findMeetingTimes payload.
