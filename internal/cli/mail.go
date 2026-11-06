@@ -126,7 +126,7 @@ func newMailSearchCmd() *cobra.Command {
 
 func newMailSendCmd() *cobra.Command {
 	var mailbox, subject, bodyFile, cc string
-	var to []string
+	var to, attachPaths []string
 	var asHTML bool
 	cmd := &cobra.Command{
 		Use:   "send --to <addr> --subject <s> --body-file <f>",
@@ -140,33 +140,50 @@ func newMailSendCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			atts, err := loadAttachments(cfg, attachPaths)
+			if err != nil {
+				return err
+			}
 
 			recipients := append(append([]string{}, msg.To...), msg.Cc...)
 			plan := mail.PlanSend(cfg, recipients)
 			if plan.Action == mail.DraftOnly {
 				fmt.Fprintf(os.Stderr, "send guardrail: %v not in send_allow — saving as draft for review\n", plan.Blocked)
-				return createDraft(cmd.Context(), client, mbx, msg, plan.Blocked, nil)
+				return createDraft(cmd.Context(), client, mbx, msg, plan.Blocked, nil, atts)
 			}
 
-			if err := client.Mail().Send(cmd.Context(), mbx, msg); err != nil {
+			if len(atts) == 0 {
+				if err := client.Mail().Send(cmd.Context(), mbx, msg); err != nil {
+					return err
+				}
+				return output.WriteJSON(os.Stdout, map[string]any{"sent": true, "mailbox": mbx, "to": msg.To})
+			}
+			// Attachments can only be added to a message that exists, so the
+			// mail is built as a draft and then sent.
+			id, err := client.Mail().CreateDraft(cmd.Context(), mbx, msg)
+			if err != nil {
 				return err
 			}
-			return output.WriteJSON(os.Stdout, map[string]any{"sent": true, "mailbox": mbx, "to": msg.To})
+			if err := sendDraftWith(cmd.Context(), client, mbx, id, nil, atts); err != nil {
+				return err
+			}
+			return output.WriteJSON(os.Stdout, map[string]any{"sent": true, "mailbox": mbx, "to": msg.To, "attachments": len(atts)})
 		},
 	}
 	addComposeFlags(cmd, &mailbox, &subject, &bodyFile, &cc, &to, &asHTML)
+	addAttachFlag(cmd, &attachPaths)
 	return cmd
 }
 
 func newMailDraftCmd() *cobra.Command {
 	var mailbox, subject, bodyFile, cc string
-	var to, inlineImages []string
+	var to, inlineImages, attachPaths []string
 	var asHTML bool
 	cmd := &cobra.Command{
 		Use:   "draft --to <addr> --subject <s> --body-file <f>",
 		Short: "Create a draft message (never sends)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			_, client, mbx, err := mailContext(mailbox)
+			cfg, client, mbx, err := mailContext(mailbox)
 			if err != nil {
 				return err
 			}
@@ -178,11 +195,16 @@ func newMailDraftCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return createDraft(cmd.Context(), client, mbx, msg, nil, images)
+			atts, err := loadAttachments(cfg, attachPaths)
+			if err != nil {
+				return err
+			}
+			return createDraft(cmd.Context(), client, mbx, msg, nil, images, atts)
 		},
 	}
 	addComposeFlags(cmd, &mailbox, &subject, &bodyFile, &cc, &to, &asHTML)
 	cmd.Flags().StringArrayVar(&inlineImages, "inline-image", nil, "attach an inline image as cid=path, referenced from the body as <img src=\"cid:…\"> (repeatable)")
+	addAttachFlag(cmd, &attachPaths)
 	return cmd
 }
 
@@ -231,12 +253,15 @@ func composeMessage(subject, bodyFile string, to []string, cc string, asHTML boo
 	}, nil
 }
 
-func createDraft(ctx context.Context, client backend.Backend, mbx string, msg mail.Message, blocked []string, images []mail.InlineImage) error {
+func createDraft(ctx context.Context, client backend.Backend, mbx string, msg mail.Message, blocked []string, images []mail.InlineImage, atts []mail.FileAttachment) error {
 	id, err := client.Mail().CreateDraft(ctx, mbx, msg)
 	if err != nil {
 		return err
 	}
 	if err := attachInlineImages(ctx, client, mbx, id, images); err != nil {
+		return err
+	}
+	if err := attachFiles(ctx, client, mbx, id, atts); err != nil {
 		return err
 	}
 	return output.WriteJSON(os.Stdout, map[string]any{
@@ -247,6 +272,7 @@ func createDraft(ctx context.Context, client backend.Backend, mbx string, msg ma
 		"blocked":      blocked,
 		"draftReason":  draftReason(blocked),
 		"inlineImages": len(images),
+		"attachments":  len(atts),
 	})
 }
 

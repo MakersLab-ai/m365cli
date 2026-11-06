@@ -103,6 +103,16 @@ func (m mailSvc) AddInlineImage(context.Context, string, string, mail.InlineImag
 	return backend.ErrUnsupported
 }
 
+// AddAttachment and SendDraft are Graph-only for now (--attach on EWS is
+// refused by the CLI before anything is created).
+func (m mailSvc) AddAttachment(context.Context, string, string, mail.FileAttachment) error {
+	return backend.ErrUnsupported
+}
+
+func (m mailSvc) SendDraft(context.Context, string, string) error {
+	return backend.ErrUnsupported
+}
+
 func (m mailSvc) Attachments(ctx context.Context, mailbox, msgID string) ([]byte, error) {
 	atts, err := m.c.ListAttachments(ctx, mailbox, msgID)
 	if err != nil {

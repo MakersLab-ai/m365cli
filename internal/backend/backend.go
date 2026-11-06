@@ -80,6 +80,13 @@ type MailService interface {
 	// makes a signature block with logos survive into a draft.
 	AddInlineImage(ctx context.Context, mailbox, msgID string, img mail.InlineImage) error
 
+	// AddAttachment adds a regular (not inline) file attachment to an
+	// existing draft. Large files go through an upload session.
+	AddAttachment(ctx context.Context, mailbox, msgID string, att mail.FileAttachment) error
+	// SendDraft sends a draft that already exists — the last step when a
+	// message needs attachments, which can only be added to a draft.
+	SendDraft(ctx context.Context, mailbox, msgID string) error
+
 	Attachments(ctx context.Context, mailbox, msgID string) ([]byte, error)
 	// GetAttachment returns the attachment resource JSON (the CLI decodes the
 	// base64 content when --out is given).

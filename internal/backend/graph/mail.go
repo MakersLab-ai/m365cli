@@ -143,6 +143,51 @@ func (m mailSvc) AddInlineImage(ctx context.Context, mailbox, msgID string, img 
 	return err
 }
 
+// AddAttachment adds a regular file attachment to a draft: a single POST for
+// small files, an upload session with chunked PUTs above 3 MB.
+func (m mailSvc) AddAttachment(ctx context.Context, mailbox, msgID string, att mail.FileAttachment) error {
+	base := "messages/" + url.PathEscape(msgID) + "/attachments"
+	if len(att.Data) <= mail.SmallAttachmentLimit {
+		payload, err := mail.BuildFileAttachment(att)
+		if err != nil {
+			return err
+		}
+		_, err = m.c.PostForMailbox(ctx, mailbox, base, payload)
+		return err
+	}
+	payload, err := mail.BuildUploadSession(att)
+	if err != nil {
+		return err
+	}
+	raw, err := m.c.PostForMailbox(ctx, mailbox, base+"/createUploadSession", payload)
+	if err != nil {
+		return err
+	}
+	var session struct {
+		UploadURL string `json:"uploadUrl"`
+	}
+	if err := json.Unmarshal(raw, &session); err != nil || session.UploadURL == "" {
+		return fmt.Errorf("create upload session: unexpected response: %s", string(raw))
+	}
+	total := len(att.Data)
+	for start := 0; start < total; start += mail.UploadChunkSize {
+		end := start + mail.UploadChunkSize
+		if end > total {
+			end = total
+		}
+		if err := m.c.PutUploadChunk(ctx, session.UploadURL, start, total, att.Data[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SendDraft sends an existing draft (POST /messages/{id}/send).
+func (m mailSvc) SendDraft(ctx context.Context, mailbox, msgID string) error {
+	_, err := m.c.PostForMailbox(ctx, mailbox, "messages/"+url.PathEscape(msgID)+"/send", nil)
+	return err
+}
+
 func (m mailSvc) Attachments(ctx context.Context, mailbox, msgID string) ([]byte, error) {
 	suffix := "messages/" + url.PathEscape(msgID) + "/attachments?$select=id,name,contentType,size"
 	return unwrapValue(m.c.GetForMailbox(ctx, mailbox, suffix))
