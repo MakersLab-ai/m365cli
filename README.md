@@ -153,6 +153,15 @@ Bodies are plain text by default, and the formatting survives on every path:
 - **Inline images survive.** `--inline-image cid=path` (repeatable, on `reply`
   and `draft`) attaches a picture as an inline attachment, so an HTML body can
   reference it as `<img src="cid:…">` — that is how a signature keeps its logos.
+- **Files go along as real attachments.** `--attach path` (repeatable, on
+  `send`, `draft` and `reply`) adds a regular attachment — a PDF, a
+  spreadsheet — that the recipient sees in the attachment list. Up to 3 MB per
+  file in one request, larger files (up to 150 MB) through a Graph upload
+  session. Sending with attachments builds a draft, attaches, then sends it; if
+  an attachment fails, nothing is sent and the draft stays in the mailbox. The
+  send guardrail is unchanged: recipients outside `send_allow` get a draft
+  **with** the attachments for review. Graph only — on EWS `--attach` is
+  refused before anything is created.
 
 Both backends honour this, each in its own terms: Graph needs the conversion
 described above, while EWS types every body explicitly and keeps a plain-text

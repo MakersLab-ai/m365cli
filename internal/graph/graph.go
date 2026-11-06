@@ -92,6 +92,51 @@ func (c *Client) PutRawForMailbox(ctx context.Context, mailbox, suffix, contentT
 	return c.doRaw(ctx, http.MethodPut, path, contentType, payload)
 }
 
+// PutUploadChunk sends one chunk of a file to a Graph upload session (the
+// uploadUrl returned by createUploadSession). The URL is pre-authenticated and
+// Microsoft rejects requests that also carry a bearer token, so no
+// Authorization header is sent. It only accepts URLs on Microsoft's hosts (or
+// on BaseURL's host, for tests), so a crafted response cannot redirect file
+// bytes elsewhere.
+func (c *Client) PutUploadChunk(ctx context.Context, uploadURL string, start, total int, chunk []byte) error {
+	if !c.isUploadHost(uploadURL) {
+		return fmt.Errorf("upload url is not on a Microsoft host: %q", uploadURL)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, bytes.NewReader(chunk))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, start+len(chunk)-1, total))
+	req.ContentLength = int64(len(chunk))
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("upload chunk %d-%d: %s: %s", start, start+len(chunk)-1, resp.Status, string(body))
+	}
+	return nil
+}
+
+func (c *Client) isUploadHost(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	if base, err := url.Parse(c.BaseURL); err == nil && base.Host == u.Host && base.Scheme == u.Scheme {
+		return true
+	}
+	if u.Scheme != "https" {
+		return false
+	}
+	h := strings.ToLower(u.Hostname())
+	return h == "graph.microsoft.com" || h == "outlook.office.com" || h == "outlook.office365.com" ||
+		strings.HasSuffix(h, ".outlook.office.com") || strings.HasSuffix(h, ".outlook.office365.com")
+}
+
 // SearchSites performs GET /sites?search={query}. This is an intentionally
 // UN-scoped discovery call (it does not consult allowed_sites): it only returns
 // site metadata to help an operator find the site ID to add to the allowlist.
