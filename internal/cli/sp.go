@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -17,7 +18,7 @@ func newSpCmd() *cobra.Command {
 		Use:   "sp",
 		Short: "SharePoint operations (app-only, scoped by allowed_sites / Sites.Selected)",
 	}
-	sp.AddCommand(newSpSitesCmd(), newSpListCmd(), newSpItemsCmd(), newSpDownloadCmd())
+	sp.AddCommand(newSpSitesCmd(), newSpListCmd(), newSpItemsCmd(), newSpDownloadCmd(), newSpUploadCmd(), newSpMoveCmd())
 	return sp
 }
 
@@ -120,5 +121,63 @@ func newSpDownloadCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&out, "out", "", "local file to write the content to")
+	return cmd
+}
+
+func newSpUploadCmd() *cobra.Command {
+	var folder, name string
+	var overwrite bool
+	cmd := &cobra.Command{
+		Use:   "upload <site-id> <local-file> [--path <folder>]",
+		Short: "Upload a local file into a site's default library (simple upload; fails if the file exists unless --overwrite)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			content, err := os.ReadFile(args[1])
+			if err != nil {
+				return fmt.Errorf("read %s: %w", args[1], err)
+			}
+			if name == "" {
+				name = filepath.Base(args[1])
+			}
+			client, err := siteClient()
+			if err != nil {
+				return err
+			}
+			data, err := client.Sites().Upload(cmd.Context(), args[0], folder, name, content, overwrite)
+			if err != nil {
+				return err
+			}
+			return emitData(data)
+		},
+	}
+	cmd.Flags().StringVar(&folder, "path", "", "target folder within the library (default root)")
+	cmd.Flags().StringVar(&name, "name", "", "file name in the library (default: local file name)")
+	cmd.Flags().BoolVar(&overwrite, "overwrite", false, "replace an existing file with the same name")
+	return cmd
+}
+
+func newSpMoveCmd() *cobra.Command {
+	var src, dst string
+	cmd := &cobra.Command{
+		Use:   "move <site-id> --path <item> --to <folder>",
+		Short: "Move an item into another existing folder of the same library (never overwrites)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if src == "" || dst == "" {
+				return fmt.Errorf("--path <item> and --to <folder> are required")
+			}
+			client, err := siteClient()
+			if err != nil {
+				return err
+			}
+			data, err := client.Sites().Move(cmd.Context(), args[0], src, dst)
+			if err != nil {
+				return err
+			}
+			return emitData(data)
+		},
+	}
+	cmd.Flags().StringVar(&src, "path", "", "path of the file/folder to move, relative to the library root")
+	cmd.Flags().StringVar(&dst, "to", "", "existing target folder, relative to the library root")
 	return cmd
 }

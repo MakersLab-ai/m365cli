@@ -141,7 +141,19 @@ m365 contacts add --email ada@contoso.com --given Ada --surname Lovelace --json
 m365 drive upload ./report.pdf --dest Reports/report.pdf --json
 m365 drive download <item-id> --out ./report.pdf --json
 m365 sp download <site-id> <item-id> --out ./file.docx --json
+
+# SharePoint / shared OneDrive writes — paths are relative to the library root.
+# Upload fails if the file already exists; --overwrite replaces it on purpose:
+m365 sp upload <site-id> ./rechnung.pdf --path "Team/postausgang" --json
+# Move an item into an EXISTING folder of the same library (never overwrites,
+# never deletes; a name clash in the target fails with 409):
+m365 sp move <site-id> --path "Team/postausgang/rechnung.pdf" \
+  --to "Team/postausgang/gesendet" --json
 ```
+
+`m365 drive …` is the *user's own* OneDrive (`/users/<mbx>/drive`). A folder
+shared to the app via `allowed_sites` (incl. someone else's OneDrive) is only
+reachable with `m365 sp …` — use `sp items/download/upload/move` there.
 
 The send guardrail also applies to `reply`/`reply-all`: recipients are read from
 the original message, and if any is outside `send_allow` the result is a

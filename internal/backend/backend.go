@@ -159,4 +159,10 @@ type SiteService interface {
 	ListDrives(ctx context.Context, siteID string) ([]byte, error)
 	Items(ctx context.Context, siteID, path string) ([]byte, error)
 	Download(ctx context.Context, siteID, itemID string) ([]byte, error)
+	// Upload writes content as folder/name into the site's default library.
+	// An existing file is only replaced when overwrite is set.
+	Upload(ctx context.Context, siteID, folder, name string, content []byte, overwrite bool) ([]byte, error)
+	// Move re-parents the item at srcPath into the existing folder destFolder
+	// (same library). It never overwrites: a name clash fails.
+	Move(ctx context.Context, siteID, srcPath, destFolder string) ([]byte, error)
 }
