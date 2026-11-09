@@ -157,6 +157,27 @@ func (c *Client) GetForSite(ctx context.Context, siteID, suffix string) ([]byte,
 	return c.do(ctx, http.MethodGet, path, nil)
 }
 
+// PutRawForSite performs PUT /sites/{siteID}/{suffix} with a raw body (file
+// bytes for `sp upload`) after the allowed_sites check. Out-of-scope sites fail
+// before I/O.
+func (c *Client) PutRawForSite(ctx context.Context, siteID, suffix, contentType string, payload []byte) ([]byte, error) {
+	path, err := c.sitePath(siteID, suffix)
+	if err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodPut, path, contentType, payload)
+}
+
+// PatchForSite performs PATCH /sites/{siteID}/{suffix} with a JSON payload
+// (e.g. a new parentReference for `sp move`) after the allowed_sites check.
+func (c *Client) PatchForSite(ctx context.Context, siteID, suffix string, payload []byte) ([]byte, error) {
+	path, err := c.sitePath(siteID, suffix)
+	if err != nil {
+		return nil, err
+	}
+	return c.do(ctx, http.MethodPatch, path, payload)
+}
+
 // MailboxDelta GETs a mailbox messages/delta resource: either an initial suffix
 // (e.g. "mailFolders/inbox/messages/delta?$select=...") or an absolute
 // deltaLink/nextLink returned by a previous call. It enforces the mailbox

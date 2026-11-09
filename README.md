@@ -105,7 +105,7 @@ m365 calendar  list get create update delete
                freebusy find-times                          # scoped by allowed_mailboxes
 m365 contacts  list get add                                 # scoped by allowed_mailboxes
 m365 drive     ls search get download upload                # OneDrive, scoped by allowed_mailboxes
-m365 sp        sites list items download                    # SharePoint, scoped by allowed_sites
+m365 sp        sites list items download upload move        # SharePoint, scoped by allowed_sites
 ```
 
 Run `m365 <domain> --help` or `m365 <domain> <verb> --help` for flags.

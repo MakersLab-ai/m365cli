@@ -486,3 +486,127 @@ func TestMailAddInlineImagePostsInlineAttachment(t *testing.T) {
 		t.Errorf("attachment = %v, want an inline attachment carrying the cid", att)
 	}
 }
+
+// --- sp upload / sp move ---
+
+const site = "contoso.sharepoint.com,s,w"
+
+func siteCfg() *config.Config {
+	return &config.Config{AllowedSites: []string{"contoso.sharepoint.com,*"}}
+}
+
+func TestSitesUploadFailsOnConflictByDefault(t *testing.T) {
+	var cap capture
+	be := newBackend(t, siteCfg(), &cap, http.StatusCreated, `{"id":"new"}`)
+
+	if _, err := be.Sites().Upload(context.Background(), site, "A/Post Ausgang", "Rechnung 1.pdf", []byte("pdf"), false); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	want := "/sites/" + site + "/drive/root:/A/Post%20Ausgang/Rechnung%201.pdf:/content?@microsoft.graph.conflictBehavior=fail"
+	if cap.method != http.MethodPut || cap.uri != want {
+		t.Errorf("got %s %q, want PUT %q", cap.method, cap.uri, want)
+	}
+	if cap.body != "pdf" {
+		t.Errorf("body = %q", cap.body)
+	}
+}
+
+func TestSitesUploadReplaceOnlyWhenAsked(t *testing.T) {
+	var cap capture
+	be := newBackend(t, siteCfg(), &cap, http.StatusOK, `{"id":"x"}`)
+
+	if _, err := be.Sites().Upload(context.Background(), site, "", "f.txt", []byte("x"), true); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if !strings.HasSuffix(cap.uri, "/drive/root:/f.txt:/content?@microsoft.graph.conflictBehavior=replace") {
+		t.Errorf("uri = %q", cap.uri)
+	}
+}
+
+func TestSitesUploadRejectsOutOfScopeSite(t *testing.T) {
+	var cap capture
+	be := newBackend(t, siteCfg(), &cap, http.StatusOK, `{}`)
+	if _, err := be.Sites().Upload(context.Background(), "evil.sharepoint.com,a,b", "", "f.txt", []byte("x"), false); err == nil || cap.method != "" {
+		t.Fatal("Upload must reject an out-of-scope site before I/O")
+	}
+}
+
+// moveServer answers the destination-folder lookup with folderResp and records
+// every request, so the move flow (resolve folder, then PATCH) can be pinned.
+func moveServer(t *testing.T, folderResp string) (backend.Backend, *[]capture) {
+	t.Helper()
+	var calls []capture
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b := make([]byte, r.ContentLength)
+		if r.ContentLength > 0 {
+			_, _ = r.Body.Read(b)
+		}
+		calls = append(calls, capture{method: r.Method, uri: r.URL.RequestURI(), body: string(b)})
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(folderResp))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"file1","name":"r.pdf"}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := graph.New(siteCfg(), fakeToken{})
+	c.BaseURL = srv.URL
+	return graphbackend.New(c), &calls
+}
+
+func TestSitesMoveResolvesFolderThenPatchesParent(t *testing.T) {
+	be, calls := moveServer(t, `{"id":"dest42","folder":{"childCount":0}}`)
+
+	if _, err := be.Sites().Move(context.Background(), site, "R/postausgang/r 1.pdf", "R/postausgang/gesendet"); err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+	if len(*calls) != 2 {
+		t.Fatalf("calls = %d, want 2", len(*calls))
+	}
+	get, patch := (*calls)[0], (*calls)[1]
+	if get.method != http.MethodGet || get.uri != "/sites/"+site+"/drive/root:/R/postausgang/gesendet?$select=id,name,folder" {
+		t.Errorf("lookup = %s %q", get.method, get.uri)
+	}
+	wantPatch := "/sites/" + site + "/drive/root:/R/postausgang/r%201.pdf?@microsoft.graph.conflictBehavior=fail"
+	if patch.method != http.MethodPatch || patch.uri != wantPatch {
+		t.Errorf("patch = %s %q, want PATCH %q", patch.method, patch.uri, wantPatch)
+	}
+	var body struct {
+		ParentReference struct {
+			ID string `json:"id"`
+		} `json:"parentReference"`
+	}
+	if err := json.Unmarshal([]byte(patch.body), &body); err != nil || body.ParentReference.ID != "dest42" {
+		t.Errorf("patch body = %q", patch.body)
+	}
+}
+
+func TestSitesMoveRefusesNonFolderTarget(t *testing.T) {
+	be, calls := moveServer(t, `{"id":"f9","file":{}}`)
+
+	if _, err := be.Sites().Move(context.Background(), site, "a.pdf", "b.pdf"); err == nil {
+		t.Fatal("Move onto a file must fail")
+	}
+	if len(*calls) != 1 {
+		t.Errorf("must not PATCH after a non-folder target; calls = %d", len(*calls))
+	}
+}
+
+func TestSitesMoveRejectsOutOfScopeSite(t *testing.T) {
+	be, calls := moveServer(t, `{"id":"d","folder":{}}`)
+	if _, err := be.Sites().Move(context.Background(), "evil.sharepoint.com,a,b", "a.pdf", "dir"); err == nil || len(*calls) != 0 {
+		t.Fatal("Move must reject an out-of-scope site before I/O")
+	}
+}
+
+func TestSitesMoveRejectsEmptyPaths(t *testing.T) {
+	be, calls := moveServer(t, `{"id":"d","folder":{}}`)
+	for _, tc := range [][2]string{{"", "dir"}, {"/", "dir"}, {"a.pdf", ""}} {
+		if _, err := be.Sites().Move(context.Background(), site, tc[0], tc[1]); err == nil {
+			t.Errorf("Move(%q, %q) must fail", tc[0], tc[1])
+		}
+	}
+	if len(*calls) != 0 {
+		t.Errorf("empty paths must fail before I/O; calls = %d", len(*calls))
+	}
+}

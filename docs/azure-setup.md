@@ -265,6 +265,8 @@ confirms the full chain.
 | Token works, mailbox calls return 403 | RBAC scope not applied yet (wait up to 2h), or the mailbox isn't in your management scope. Check with `Test-ServicePrincipalAuthorization`. |
 | App can read mailboxes outside the scope | A tenant-wide Entra grant is still present — remove it (see the warning in §3). |
 | `drive`/`sp` calls return 403 | No `Sites.Selected` grant for that site/OneDrive yet — grant it per §4. |
+| `sp items` works, `sp upload`/`sp move` return 403 | The grant is read-only. Writing needs the `write` role on the site (or on the folder with `Files.SelectedOperations.Selected`). A move needs write on both the source and the target folder. |
+| `drive ls` returns 403, `sp items` on the same OneDrive works | `drive` targets the mailbox user's *own* OneDrive. A folder in another user's OneDrive that was granted to the app is only reachable via `sp …` with that OneDrive's site id. |
 
 ## References
 

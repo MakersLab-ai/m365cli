@@ -285,3 +285,50 @@ func TestMailboxDeltaRejectsAbsoluteUrlOffHostOrForeignMailbox(t *testing.T) {
 		t.Error("must reject absolute URL belonging to a different mailbox")
 	}
 }
+
+func TestPutRawForSiteEnforcesAllowlistAndSendsBytes(t *testing.T) {
+	cfg := &config.Config{AllowedSites: []string{"contoso.sharepoint.com,*"}}
+
+	blocked := false
+	c0 := newTestClient(t, cfg, func(http.ResponseWriter, *http.Request) { blocked = true })
+	if _, err := c0.PutRawForSite(context.Background(), "evil.sharepoint.com,a,b", "drive/root:/f.txt:/content", "application/octet-stream", []byte("x")); err == nil || blocked {
+		t.Fatal("PutRawForSite must reject out-of-scope site before I/O")
+	}
+
+	var gotMethod, gotPath, gotBody string
+	c := newTestClient(t, cfg, func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"1"}`))
+	})
+	if _, err := c.PutRawForSite(context.Background(), "contoso.sharepoint.com,s,w", "drive/root:/f.txt:/content", "application/octet-stream", []byte("hello")); err != nil {
+		t.Fatalf("PutRawForSite: %v", err)
+	}
+	if gotMethod != http.MethodPut || gotPath != "/sites/contoso.sharepoint.com,s,w/drive/root:/f.txt:/content" || gotBody != "hello" {
+		t.Errorf("method=%q path=%q body=%q", gotMethod, gotPath, gotBody)
+	}
+}
+
+func TestPatchForSiteEnforcesAllowlist(t *testing.T) {
+	cfg := &config.Config{AllowedSites: []string{"contoso.sharepoint.com,*"}}
+
+	blocked := false
+	c0 := newTestClient(t, cfg, func(http.ResponseWriter, *http.Request) { blocked = true })
+	if _, err := c0.PatchForSite(context.Background(), "evil.sharepoint.com,a,b", "drive/items/1", []byte(`{}`)); err == nil || blocked {
+		t.Fatal("PatchForSite must reject out-of-scope site before I/O")
+	}
+
+	var gotMethod string
+	c := newTestClient(t, cfg, func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		_, _ = w.Write([]byte(`{"id":"1"}`))
+	})
+	if _, err := c.PatchForSite(context.Background(), "contoso.sharepoint.com,s,w", "drive/items/1", []byte(`{}`)); err != nil {
+		t.Fatalf("PatchForSite: %v", err)
+	}
+	if gotMethod != http.MethodPatch {
+		t.Errorf("method = %q, want PATCH", gotMethod)
+	}
+}

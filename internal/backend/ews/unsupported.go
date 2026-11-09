@@ -54,3 +54,9 @@ func (siteSvc) Items(context.Context, string, string) ([]byte, error) {
 func (siteSvc) Download(context.Context, string, string) ([]byte, error) {
 	return nil, backend.ErrUnsupported
 }
+func (siteSvc) Upload(context.Context, string, string, string, []byte, bool) ([]byte, error) {
+	return nil, backend.ErrUnsupported
+}
+func (siteSvc) Move(context.Context, string, string, string) ([]byte, error) {
+	return nil, backend.ErrUnsupported
+}
