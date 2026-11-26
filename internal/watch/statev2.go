@@ -30,6 +30,9 @@ type PendingMsg struct {
 	Floor time.Time `json:"floor,omitzero"`
 	// CatchUp marks ids queued by the post-re-prime catch-up list.
 	CatchUp bool `json:"catch_up,omitempty"`
+	// Rejected counts hook 4xx answers for this message (poison message);
+	// at maxRejects it is dropped with reason "rejected".
+	Rejected int `json:"rejected,omitempty"`
 }
 
 // CatchUp is a pending catch-up after a (re-)prime: once the prime has a
@@ -73,15 +76,26 @@ type StateV2 struct {
 	ErrorCount  int       `json:"error_count,omitempty"`
 	LastErrorAt time.Time `json:"last_error_at,omitzero"`
 
-	// StuckLink (hash) / StuckCount count consecutive non-transient 4xx answers
-	// on the same stored link; at stuckLimit the cursor is treated as lost.
-	StuckLink  string `json:"stuck_link,omitempty"`
-	StuckCount int    `json:"stuck_count,omitempty"`
+	// StuckLink (hash), StuckSince and StuckCount track consecutive
+	// non-transient 4xx answers on the same stored link. After stuckMinFailures
+	// failures spanning at least stuckWindow the cursor is treated as lost.
+	StuckLink  string    `json:"stuck_link,omitempty"`
+	StuckSince time.Time `json:"stuck_since,omitzero"`
+	StuckCount int       `json:"stuck_count,omitempty"`
 
 	// DeliverFailures / DeliverNotBefore: consecutive hook failures and the
 	// backoff horizon of the pending queue (oldest first, one message per POST).
 	DeliverFailures  int       `json:"deliver_failures,omitempty"`
 	DeliverNotBefore time.Time `json:"deliver_not_before,omitzero"`
+
+	// Dropped mail (found but never delivered), for monitoring. DroppedTotal
+	// only grows; DroppedByReason keys: expired_24h, too_old, rejected,
+	// pending_cap, fetch_404. LastDroppedCount is the number dropped in the
+	// poll at LastDroppedAt.
+	DroppedTotal     int            `json:"dropped_total,omitempty"`
+	LastDroppedAt    time.Time      `json:"last_dropped_at,omitzero"`
+	LastDroppedCount int            `json:"last_dropped_count,omitempty"`
+	DroppedByReason  map[string]int `json:"dropped_by_reason,omitempty"`
 
 	// V1SeenMtime is the mtime of the v1 file whose seen ids were last merged
 	// in. A newer v1 file means v0.2.x ran after us (rollback); its seen ids

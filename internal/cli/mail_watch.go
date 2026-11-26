@@ -35,6 +35,13 @@ func newMailWatchPollCmd() *cobra.Command {
 		Use:   "poll",
 		Short: "Delta-poll mailbox(es) on an interval, forwarding changes to --hook-url",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			var err error
+			if eo.CatchUpMax, err = engineCatchUpMax(catchUpMax); err != nil {
+				return err
+			}
+			if eo.MaxPostsPoll < 1 {
+				return fmt.Errorf("--max-posts-per-poll must be >= 1, got %d", eo.MaxPostsPoll)
+			}
 			cfg, err := loadConfig()
 			if err != nil {
 				return err
@@ -54,13 +61,6 @@ func newMailWatchPollCmd() *cobra.Command {
 				return err
 			}
 
-			if catchUpMax < 0 {
-				return fmt.Errorf("--catchup-max must be >= 0 (0 = no catch-up)")
-			}
-			eo.CatchUpMax = catchUpMax
-			if catchUpMax == 0 {
-				eo.CatchUpMax = -1 // engine: <0 = off, 0 = default
-			}
 			log := watch.NewLogger(os.Stderr)
 			hook := watch.NewHookClient(hookURL, hookToken)
 			stateDir := filepath.Join(filepath.Dir(flags.configPath), "watch")
@@ -108,6 +108,19 @@ func newMailWatchPollCmd() *cobra.Command {
 	cmd.Flags().IntVar(&eo.MaxPagesPoll, "max-pages-per-poll", 500, "delta pages per mailbox per poll (a large prime continues next poll)")
 	cmd.Flags().DurationVar(&eo.PollDeadline, "poll-deadline", 3*time.Minute, "delta paging time per mailbox per poll")
 	return cmd
+}
+
+// engineCatchUpMax maps the --catchup-max flag (0 = off) to the engine option
+// (<0 = off, 0 = default).
+func engineCatchUpMax(flag int) (int, error) {
+	switch {
+	case flag < 0:
+		return 0, fmt.Errorf("--catchup-max must be >= 0 (0 = no catch-up), got %d", flag)
+	case flag == 0:
+		return -1, nil
+	default:
+		return flag, nil
+	}
 }
 
 // watchSettings bundles the poll flags for newWatchPoller.

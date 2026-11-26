@@ -29,7 +29,7 @@ type EngineOptions struct {
 	MaxPagesPoll  int           // delta pages per mailbox per poll (default 500 = 100k ids)
 	PollDeadline  time.Duration // pagination time per mailbox per poll (default 3m)
 	CatchUpMax    int           // catch-up count cap after a prime (0 = default 10; <0 = off)
-	CatchUpWindow time.Duration // catch-up never reaches further back than this (default 24h)
+	CatchUpWindow time.Duration // catch-up never reaches further back than this, and no mail received earlier is ever delivered (default 24h)
 	CatchUpMaxAge time.Duration // anchor older than this → catch-up only from the prime start (default 48h)
 	PendingMaxAge time.Duration // undelivered ids are dropped after this (default 24h)
 	PendingCap    int           // max pending ids; oldest dropped beyond (default 500)
@@ -78,6 +78,7 @@ type Engine struct {
 
 	notBefore map[string]time.Time // mailbox → Retry-After horizon
 	locks     map[string]*os.File  // mailbox → held state lock
+	pollDrops int                  // messages dropped in the current Poll
 }
 
 // Close releases the per-mailbox state locks.
@@ -97,10 +98,14 @@ func (e *Engine) now() time.Time {
 
 const (
 	catchUpMaxAttempts = 5
-	// stuckLimit consecutive non-transient 4xx answers on the same stored link
-	// are treated as a lost cursor (backstop for answers Graph may phrase
-	// differently from the documented lost-state codes).
-	stuckLimit = 10
+	// Backstop for lost-state answers Graph may phrase differently from the
+	// documented codes: a stored link that has answered non-transient 4xx for
+	// at least stuckWindow, over at least stuckMinFailures polls, is treated
+	// as lost. A short 404 burst does not throw away a healthy cursor.
+	stuckWindow      = 30 * time.Minute
+	stuckMinFailures = 3
+	// maxRejects hook 4xx answers for one message (poison message) → dropped.
+	maxRejects = 5
 	// maxRetryAfter caps a server-requested backoff.
 	maxRetryAfter = 10 * time.Minute
 )
@@ -135,6 +140,7 @@ func (e *Engine) Poll(ctx context.Context, mailbox string) error {
 	if err != nil {
 		return err
 	}
+	e.pollDrops = 0
 	deadline := e.now().Add(e.Opts.PollDeadline)
 	seen := newCappedSet(st.Seen, seenCap)
 	syncErr := e.syncDelta(ctx, mailbox, st, seen, deadline)
@@ -225,7 +231,7 @@ func (e *Engine) startPrime(mailbox string, st *StateV2, anchor time.Time, why s
 	now := e.now()
 	st.DeltaLink, st.NextLink = "", ""
 	st.Priming, st.PrimeStartedAt = true, now
-	st.StuckLink, st.StuckCount = "", 0
+	st.StuckLink, st.StuckSince, st.StuckCount = "", time.Time{}, 0
 	if st.CatchUp != nil || e.Opts.CatchUpMax < 0 {
 		return // a restarted prime keeps its original catch-up; or catch-up is off
 	}
@@ -267,14 +273,15 @@ func (e *Engine) syncDelta(ctx context.Context, mailbox string, st *StateV2, see
 		if err != nil {
 			lost := syncStateLost(err)
 			if !lost && stored && stuck4xx(err) {
+				now := e.now()
 				if h := shortHash(link); st.StuckLink == h {
 					st.StuckCount++
 				} else {
-					st.StuckLink, st.StuckCount = h, 1
+					st.StuckLink, st.StuckSince, st.StuckCount = h, now, 1
 				}
-				if st.StuckCount >= stuckLimit {
-					e.Log.Errorf(mailbox, "%d consecutive HTTP %d answers on the same stored delta link; treating the cursor as lost",
-						st.StuckCount, httpStatus(err))
+				if st.StuckCount >= stuckMinFailures && now.Sub(st.StuckSince) >= stuckWindow {
+					e.Log.Errorf(mailbox, "stored delta link has answered HTTP %d for %s (%d polls); treating the cursor as lost",
+						httpStatus(err), now.Sub(st.StuckSince).Round(time.Second), st.StuckCount)
 					lost = true
 				}
 			}
@@ -322,7 +329,7 @@ func (e *Engine) syncDelta(ctx context.Context, mailbox string, st *StateV2, see
 			seen.add(id)
 			st.Pending = append(st.Pending, PendingMsg{ID: id, FoundAt: now, Floor: st.Floor})
 		}
-		st.Pending = e.capPending(mailbox, st.Pending)
+		st.Pending = e.capPending(mailbox, st)
 		if page.NextLink != "" {
 			st.NextLink = page.NextLink
 		} else {
@@ -330,7 +337,14 @@ func (e *Engine) syncDelta(ctx context.Context, mailbox string, st *StateV2, see
 			st.LastSuccessAt = now
 			if st.Priming {
 				st.Priming, st.PrimedAt = false, now
-				st.Floor = st.PrimeStartedAt.Add(-e.Opts.FloorMargin)
+				// The 48 h rule is evaluated at completion too: a prime that
+				// stalled for days resumes "from now", so its floor moves to
+				// the completion time.
+				base := st.PrimeStartedAt
+				if now.Sub(base) > e.Opts.CatchUpMaxAge {
+					base = now
+				}
+				st.Floor = base.Add(-e.Opts.FloorMargin)
 				st.PrimeStartedAt = time.Time{}
 				e.Log.Infof("%s: prime complete; watching from now", mailbox)
 			} else {
@@ -338,7 +352,7 @@ func (e *Engine) syncDelta(ctx context.Context, mailbox string, st *StateV2, see
 			}
 		}
 		st.ErrorClass, st.ErrorCount = "", 0
-		st.StuckLink, st.StuckCount = "", 0
+		st.StuckLink, st.StuckSince, st.StuckCount = "", time.Time{}, 0
 		st.Seen = seen.slice()
 		if st.CatchUp != nil && exclude != nil {
 			st.CatchUp.Exclude = exclude.slice()
@@ -357,6 +371,14 @@ func (e *Engine) syncDelta(ctx context.Context, mailbox string, st *StateV2, see
 func (e *Engine) catchUp(ctx context.Context, mailbox string, st *StateV2, seen *cappedSet) error {
 	cu := st.CatchUp
 	now := e.now()
+	if age := now.Sub(cu.Anchor); age > e.Opts.CatchUpMaxAge {
+		// Evaluated when the prime completes: a prime that stalled for days
+		// (anchored at its own start) comes back "from now" as well.
+		e.Log.Infof("%s: catch-up anchor %s is older than %s at prime completion; resuming from now, no catch-up",
+			mailbox, cu.Anchor.UTC().Format(time.RFC3339), e.Opts.CatchUpMaxAge)
+		st.CatchUp = nil
+		return e.Store.Save(mailbox, e.Opts.Folder, st)
+	}
 	since := cu.Anchor
 	if floor := now.Add(-e.Opts.CatchUpWindow); since.Before(floor) {
 		since = floor
@@ -406,9 +428,17 @@ func (e *Engine) catchUp(ctx context.Context, mailbox string, st *StateV2, seen 
 // deliver POSTs pending messages oldest first, exactly one message per POST
 // (the fleet hook template renders only messages[0]), until the queue is
 // empty, MaxPostsPoll is reached or the poll deadline passes. The cursor is
-// never held back by delivery: a hook failure stops this poll's deliveries and
-// backs off the queue; the ids stay pending until they are older than
-// PendingMaxAge.
+// never held back by delivery.
+//
+//   - Hook 5xx / connection error (gateway down): stop, back off the queue,
+//     keep the order.
+//   - Hook 4xx other than 401/403/404/429 (this message is rejected): retried
+//     with the queue backoff, dropped as "rejected" after maxRejects.
+//   - Message fetch 5xx / 429 / transport error: back off that message, stop
+//     this poll's deliveries; 404: dropped as "fetch_404".
+//   - Mail received before now-CatchUpWindow (or before the floor) is dropped
+//     as "too_old": a valid cursor after a long stop does not replay days of
+//     mail. Pending longer than PendingMaxAge: dropped as "expired_24h".
 func (e *Engine) deliver(ctx context.Context, mailbox string, st *StateV2, deadline time.Time) error {
 	if len(st.Pending) == 0 {
 		return nil
@@ -424,6 +454,7 @@ func (e *Engine) deliver(ctx context.Context, mailbox string, st *StateV2, deadl
 			e.Log.Errorf(mailbox, "dropping undelivered message #%s: pending since %s (%s > max age %s, %d failed attempt(s))",
 				shortHash(p.ID), p.FoundAt.UTC().Format(time.RFC3339), now.Sub(p.FoundAt).Round(time.Second),
 				e.Opts.PendingMaxAge, p.Attempts)
+			e.recordDrop(st, dropExpired, 1)
 			changed = true
 			continue
 		}
@@ -433,11 +464,13 @@ func (e *Engine) deliver(ctx context.Context, mailbox string, st *StateV2, deadl
 
 	var errs []error
 	posts := 0
+	tooOld := now.Add(-e.Opts.CatchUpWindow)
+	remove := func(i int) { st.Pending = append(st.Pending[:i], st.Pending[i+1:]...) }
 	if now.Before(st.DeliverNotBefore) {
 		goto done // hook backoff
 	}
 	for i := 0; i < len(st.Pending); {
-		if posts >= e.Opts.MaxPostsPoll || (posts > 0 && e.now().After(deadline)) {
+		if posts >= e.Opts.MaxPostsPoll || e.now().After(deadline) {
 			break
 		}
 		p := &st.Pending[i]
@@ -451,7 +484,8 @@ func (e *Engine) deliver(ctx context.Context, mailbox string, st *StateV2, deadl
 			changed = true
 			if httpStatus(err) == 404 {
 				e.Log.Infof("%s: message #%s is gone (404: moved or deleted); skipped", mailbox, shortHash(p.ID))
-				st.Pending = append(st.Pending[:i], st.Pending[i+1:]...)
+				e.recordDrop(st, dropFetch404, 1)
+				remove(i)
 				continue
 			}
 			p.Attempts++
@@ -460,20 +494,25 @@ func (e *Engine) deliver(ctx context.Context, mailbox string, st *StateV2, deadl
 			if ra := retryAfter(err); ra > 0 {
 				e.backoff(mailbox, now.Add(ra))
 			}
-			if httpStatus(err) == 429 {
-				break
+			if s := httpStatus(err); s == 429 || s >= 500 || s == 0 {
+				break // Graph busy or unreachable: don't hammer it with the rest
 			}
 			i++
 			continue
 		}
-		if !p.Floor.IsZero() {
-			var probe struct {
-				Received time.Time `json:"receivedDateTime"`
+		var probe struct {
+			Received time.Time `json:"receivedDateTime"`
+		}
+		if json.Unmarshal(body, &probe) == nil && !probe.Received.IsZero() {
+			limit, why := tooOld, "older than the delivery window "+e.Opts.CatchUpWindow.String()
+			if p.Floor.After(limit) {
+				limit, why = p.Floor, "before the watch floor (moved/restored mail)"
 			}
-			if json.Unmarshal(body, &probe) == nil && !probe.Received.IsZero() && probe.Received.Before(p.Floor) {
-				e.Log.Infof("%s: message #%s was received %s, before the watch floor %s (moved/restored mail); not delivered",
-					mailbox, shortHash(p.ID), probe.Received.UTC().Format(time.RFC3339), p.Floor.UTC().Format(time.RFC3339))
-				st.Pending = append(st.Pending[:i], st.Pending[i+1:]...)
+			if probe.Received.Before(limit) {
+				e.Log.Infof("%s: message #%s was received %s, %s; not delivered",
+					mailbox, shortHash(p.ID), probe.Received.UTC().Format(time.RFC3339), why)
+				e.recordDrop(st, dropTooOld, 1)
+				remove(i)
 				changed = true
 				continue
 			}
@@ -488,11 +527,22 @@ func (e *Engine) deliver(ctx context.Context, mailbox string, st *StateV2, deadl
 			p.Attempts++
 			st.DeliverFailures++
 			st.DeliverNotBefore = now.Add(backoffFor(st.DeliverFailures))
+			if rejectedByHook(err) {
+				p.Rejected++
+				if p.Rejected >= maxRejects {
+					e.Log.Errorf(mailbox, "dropping message #%s: the hook rejected it %d times (%s)",
+						shortHash(p.ID), p.Rejected, Redact(err.Error()))
+					e.recordDrop(st, dropRejected, 1)
+					remove(i)
+					st.DeliverFailures, st.DeliverNotBefore = 0, time.Time{}
+					continue // the poison message no longer blocks newer mail
+				}
+			}
 			errs = append(errs, fmt.Errorf("deliver message #%s: %w (%d pending; cursor already advanced)",
 				shortHash(p.ID), err, len(st.Pending)))
 			break // keep the order: nothing newer goes out before this one
 		}
-		st.Pending = append(st.Pending[:i], st.Pending[i+1:]...)
+		remove(i)
 		st.DeliverFailures, st.DeliverNotBefore = 0, time.Time{}
 		posts++
 	}
@@ -503,6 +553,18 @@ done:
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// rejectedByHook: the hook answered 4xx for this message, other than auth or
+// config problems (401/403/404) and throttling (429), which concern every
+// message alike and must keep blocking the queue.
+func rejectedByHook(err error) bool {
+	var h interface{ HookStatus() int }
+	if !errors.As(err, &h) {
+		return false
+	}
+	s := h.HookStatus()
+	return s >= 400 && s < 500 && s != 401 && s != 403 && s != 404 && s != 429
 }
 
 // backoffFor is 30s doubling per failure, capped at 5m.
@@ -533,12 +595,38 @@ func stuck4xx(err error) bool {
 	return s >= 400 && s < 500 && s != 401 && s != 403 && s != 429
 }
 
-func (e *Engine) capPending(mailbox string, p []PendingMsg) []PendingMsg {
+func (e *Engine) capPending(mailbox string, st *StateV2) []PendingMsg {
+	p := st.Pending
 	if over := len(p) - e.Opts.PendingCap; over > 0 {
 		e.Log.Errorf(mailbox, "pending list over cap %d: dropping %d oldest undelivered message(s)", e.Opts.PendingCap, over)
+		e.recordDrop(st, dropPendingCap, over)
 		return append([]PendingMsg(nil), p[over:]...)
 	}
 	return p
+}
+
+// Drop reasons (keys of dropped_by_reason).
+const (
+	dropExpired    = "expired_24h" // pending longer than PendingMaxAge
+	dropTooOld     = "too_old"     // received before now-CatchUpWindow or before the floor
+	dropRejected   = "rejected"    // hook answered 4xx maxRejects times
+	dropPendingCap = "pending_cap" // pending list over PendingCap
+	dropFetch404   = "fetch_404"   // gone before delivery (moved/deleted)
+)
+
+// recordDrop updates the dropped-mail counters in st.
+func (e *Engine) recordDrop(st *StateV2, reason string, n int) {
+	if n <= 0 {
+		return
+	}
+	e.pollDrops += n
+	st.DroppedTotal += n
+	if st.DroppedByReason == nil {
+		st.DroppedByReason = map[string]int{}
+	}
+	st.DroppedByReason[reason] += n
+	st.LastDroppedAt = e.now()
+	st.LastDroppedCount = e.pollDrops
 }
 
 func (e *Engine) backoff(mailbox string, until time.Time) {

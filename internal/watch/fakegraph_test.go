@@ -48,6 +48,9 @@ type fakeGraphSrv struct {
 	msgFail    []int // statuses for the next per-message GETs
 	listFail   int   // fail the next n catch-up list requests with 503
 	listDup    bool  // list every hit twice
+	initFail   int   // status for every INITIAL delta request (deleted mailbox); 0 = off
+	onList     func()
+	onMsgGet   func()
 
 	deltaReqs    int
 	deltaTokens  []string // the token of every token request, in order
@@ -173,6 +176,10 @@ func (f *fakeGraphSrv) serveDelta(w http.ResponseWriter, r *http.Request) {
 	}
 	if tok == "" { // initial request
 		f.initialQuery = append(f.initialQuery, r.URL.RawQuery)
+		if f.initFail != 0 {
+			f.writeErr(w, f.initFail, "ErrorInvalidUser")
+			return
+		}
 		if q.Get("changeType") != "created" || q.Get("$select") != "id" {
 			f.t.Errorf("initial delta must be IDs-only created delta, got %q", r.URL.RawQuery)
 		}
@@ -264,6 +271,11 @@ func messageJSON(m *fakeMsg, withBody bool) string {
 
 func (f *fakeGraphSrv) serveMessage(w http.ResponseWriter, r *http.Request, id string) {
 	f.msgGets++
+	if f.onMsgGet != nil {
+		f.mu.Unlock()
+		f.onMsgGet()
+		f.mu.Lock()
+	}
 	sel := r.URL.Query().Get("$select")
 	f.msgSelects = append(f.msgSelects, sel)
 	if len(f.msgFail) > 0 {
@@ -283,6 +295,11 @@ func (f *fakeGraphSrv) serveMessage(w http.ResponseWriter, r *http.Request, id s
 
 func (f *fakeGraphSrv) serveList(w http.ResponseWriter, r *http.Request) {
 	f.listQueries = append(f.listQueries, r.URL.RawQuery)
+	if f.onList != nil {
+		f.mu.Unlock()
+		f.onList()
+		f.mu.Lock()
+	}
 	if f.listFail > 0 {
 		f.listFail--
 		f.writeErr(w, 503, "ServiceUnavailable")
@@ -324,6 +341,9 @@ type fakeHookSrv struct {
 	mu    sync.Mutex
 	down  bool
 	posts [][]byte
+	// reject: a POST whose payload contains this id is answered 422.
+	reject string
+	tries  int
 }
 
 func newFakeHook(t *testing.T) *fakeHookSrv {
@@ -338,6 +358,12 @@ func newFakeHook(t *testing.T) *fakeHookSrv {
 		}
 		var buf bytes.Buffer
 		_, _ = buf.ReadFrom(r.Body)
+		h.tries++
+		if h.reject != "" && strings.Contains(buf.String(), `"id":"`+h.reject+`"`) {
+			w.WriteHeader(422)
+			_, _ = w.Write([]byte("unprocessable"))
+			return
+		}
 		h.posts = append(h.posts, buf.Bytes())
 		w.WriteHeader(200)
 	}))

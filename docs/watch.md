@@ -21,12 +21,12 @@ Tuning flags (Graph engine, defaults shown):
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--catchup-max` | `10` | After a (re-)prime, deliver at most this many recent messages. `0` = no catch-up. |
-| `--catchup-window` | `24h` | The catch-up never reaches further back than this. |
+| `--catchup-window` | `24h` | The catch-up never reaches further back than this, and **no mail received earlier is ever delivered** (dropped as `too_old`), even with a still-valid cursor after a long stop. |
 | `--catchup-max-age` | `48h` | If the last good state is older than this, nothing older than the prime start is caught up: the mailbox resumes "from now". |
 | `--pending-max-age` | `24h` | An undelivered message is dropped (logged) once it has waited this long. Failed attempts are not counted; only age. |
-| `--max-posts-per-poll` | `20` | Hook POSTs (one message each) per mailbox per poll; the rest waits for the next poll. |
+| `--max-posts-per-poll` | `20` | Hook POSTs (one message each) per mailbox per poll; the rest waits for the next poll. Must be ≥ 1. Each POST wakes the agent for one turn, so this is also the burst of agent turns (cost, concurrency) a backlog can cause per poll; the fleet may lower it. |
 | `--max-pages-per-poll` | `500` | Delta pages per mailbox per poll (200 ids each). A larger prime continues on the next poll. |
-| `--poll-deadline` | `3m` | Paging/delivery time per mailbox per poll, so one big mailbox cannot stall the others. |
+| `--poll-deadline` | `3m` | Soft time budget per mailbox per poll for delta paging and delivery, checked between requests. A single in-flight request can overrun it by up to its own timeout (Graph and hook: 30 s), so one mailbox can hold the loop for roughly deadline + 30 s at most. |
 
 `--include-changed` / `--include-deleted` still work but switch to the v1
 engine (see "Engines").
@@ -122,20 +122,32 @@ that model:
 3. **Per-message fetch, one message per POST.** Pending ids are delivered
    oldest first: `GET messages/{id}?$select=<production fields>` (body only
    with `--include-body`), then one POST with that one message. A `404`
-   (moved or deleted meanwhile) is skipped and logged, never retried. A
-   failed fetch (5xx) delays only that message; a `429` stops this poll's
-   deliveries.
+   (moved or deleted meanwhile) is skipped, logged and counted as
+   `fetch_404`. A failed fetch (`429`, `5xx`, timeout or connection error)
+   backs off that message and stops this poll's deliveries; the rest stays
+   pending. A `Retry-After` on the fetch backs off the whole mailbox.
 4. **Delivery never holds the cursor.** If the hook fails, the cursor has
-   already advanced. Delivery stops for this poll (nothing newer overtakes the
-   failed message) and the queue backs off (30 s doubling to 5 min). Ids stay
-   in `pending` until delivered or until they are older than
-   `--pending-max-age` (24 h), then they are dropped with a log line. At most
-   500 ids are kept pending (oldest dropped first, logged).
+   already advanced.
+   - **Hook `5xx` or connection error** (gateway down): delivery stops for
+     this poll and the queue backs off (30 s doubling to 5 min). Nothing newer
+     overtakes the failed message.
+   - **Hook `4xx`** other than 401/403/404/429: this message is rejected. It is
+     retried with the same backoff and dropped as `rejected` after 5
+     rejections, so it cannot block newer mail for 24 h. 401/403/404/429 mean
+     auth or config and keep blocking like a `5xx`.
+   - Ids stay in `pending` until delivered or until they are older than
+     `--pending-max-age` (24 h), then they are dropped as `expired_24h`. At
+     most 500 ids are kept pending; the oldest are dropped first as
+     `pending_cap`.
+   - Every drop is logged and counted (see Monitoring).
 5. **Second tick = 0 POSTs.** After a delivery, a restart or a re-prime, a
    poll with no new mail sends nothing.
-6. **Floor.** Old mail moved or restored into the folder shows up as
-   "created". Mail received before the floor (prime start minus 10 min) is not
-   delivered as new; catch-up mail is exempt.
+6. **Age guard and floor.** Mail received before `now - --catchup-window`
+   (24 h) is never delivered, whatever path found it. This covers a still-valid
+   cursor after the watcher was stopped for days. Old mail moved or restored
+   into the folder shows up as "created": mail received before the floor
+   (prime start minus 10 min) is not delivered either. Both are dropped as
+   `too_old`.
 
 ### First run, token loss and re-prime
 
@@ -149,9 +161,12 @@ that model:
   - any `410 Gone` (whatever the body: JSON, empty or HTML);
   - any 4xx whose `error.code` is `syncStateNotFound`, `resyncRequired` or
     `syncStateInvalid` (case-insensitive; the docs mention `400` as well);
-  - **backstop:** 10 consecutive 4xx answers (other than 401, 403 and 429) on
-    the same stored link. These are logged as
-    `N consecutive HTTP <status> answers on the same stored delta link`.
+  - **backstop:** the same stored link has answered non-transient 4xx (not
+    401, 403 or 429) for **at least 30 min and at least 3 polls**. The first
+    failure time is persisted (`stuck_since`), and any success resets it. A
+    short `404` burst therefore keeps a healthy cursor. A deleted mailbox
+    re-primes at most once (the fresh prime has no stored link to count). The
+    log line is `stored delta link has answered HTTP <status> for <duration>`.
   A re-prime is attempted at most once per poll.
 - **Catch-up after every prime.** Once the prime has its deltaLink, one list
   query fetches mail received since the **anchor**:
@@ -169,6 +184,14 @@ that model:
 - **48 h rule.** If the anchor is older than 48 h (`--catchup-max-age`), the
   catch-up is anchored at the prime start instead. A mailbox that was dead for
   days comes back "from now" and doesn't flood the agent with old mail.
+- **48 h rule at prime completion.** The rule is checked again when the prime
+  completes. If the catch-up anchor (or the prime start) is then older than
+  48 h, the prime stalled for days, e.g. the watcher was down mid-prime. In
+  that case:
+  - there is no catch-up;
+  - the floor moves to the completion time, so mail from before it isn't
+    delivered (counted as `too_old`);
+  - the mailbox resumes from the moment the prime completed.
 - **Throttling.** On `429`/`503` the `Retry-After` header is honoured (capped
   at 10 min): the mailbox is skipped until it expires.
 
@@ -186,8 +209,9 @@ that model:
 | `catch_up` | Scheduled catch-up: anchor and the ids known before the prime |
 | `last_success_at`, `last_round_completed_at`, `primed_at` | In-sync time, last steady round, last prime |
 | `error_class`, `error_count`, `last_error_at` | `sync_state_lost` / `throttled` / `auth` / `transient` / `other`; reset on success |
-| `stuck_link`, `stuck_count` | Backstop counter: consecutive 4xx answers on one stored link (hash) |
+| `stuck_link`, `stuck_since`, `stuck_count` | Backstop: stored link (hash) answering non-transient 4xx since when, how many polls |
 | `deliver_failures`, `deliver_not_before` | Consecutive hook failures and the queue's backoff horizon |
+| `dropped_total`, `last_dropped_at`, `last_dropped_count`, `dropped_by_reason` | Dropped mail (see Monitoring) |
 | `v1_seen_mtime` | mtime of the v1 file whose seen ids were merged |
 
 A file that is unreadable, truncated, of another version or without a cursor
@@ -201,11 +225,35 @@ failed polls (error counters, backoff). Read the JSON instead:
 
 | Read | Healthy | Alarm when |
 | --- | --- | --- |
-| `last_success_at` | within a few poll intervals | older than ~3 intervals (cursor not in sync) |
+| `last_success_at` | a few minutes old at most | **older than 15 min**. That is longer than a `Retry-After` backoff (≤ 10 min) and a sliced prime (one slice ≤ 3 min per poll). |
 | `error_class`, `error_count` | empty / 0 | `error_count` keeps growing; `auth` points at permissions |
 | `priming` | `false` | `true` for longer than a few polls (stuck prime) |
 | `len(pending)` | 0 | > 0 for long |
 | oldest `pending[].found_at` | — | older than a few minutes (hook down); the message is dropped at 24 h |
+| `dropped_total` / `last_dropped_at` | unchanged | grows: mail was found but never delivered |
+
+**Dropped mail.** Every message that was found but will never be delivered is
+counted:
+
+```json
+"dropped_total": 7,
+"last_dropped_at": "2026-11-26T13:05:00Z",
+"last_dropped_count": 2,
+"dropped_by_reason": {"expired_24h": 3, "too_old": 2, "rejected": 1, "fetch_404": 1}
+```
+
+- `dropped_total` only grows.
+- `last_dropped_count` is the number dropped in the poll at `last_dropped_at`.
+- The keys are omitted while they are zero or empty (a fresh state has none),
+  and `dropped_by_reason` lists only the reasons that occurred.
+
+| Reason | Meaning | Alarm? |
+| --- | --- | --- |
+| `expired_24h` | pending longer than `--pending-max-age` (hook down for a day) | yes |
+| `rejected` | the hook answered 4xx five times for this message | yes |
+| `pending_cap` | more than 500 undelivered; oldest dropped | yes |
+| `too_old` | received before `now - 24h` or before the floor (long stop, stalled prime, moved-in old mail) | informational, by design |
+| `fetch_404` | moved or deleted before it could be delivered | informational |
 
 The v1 file (`*.json` without `.v2`) is no longer written after the upgrade.
 A monitor must read the `.v2.json` file when it exists.

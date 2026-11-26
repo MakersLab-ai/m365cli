@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/MakersLab-ai/m365cli/internal/config"
@@ -54,5 +55,32 @@ func TestResolveWatchMailboxesAllHonoursWatchMailboxes(t *testing.T) {
 	cfg.WatchMailboxes = []string{"c@x.com"}
 	if _, err := resolveWatchMailboxes(cfg, nil, true); err == nil {
 		t.Error("watch_mailboxes outside allowed_mailboxes must fail the watcher")
+	}
+}
+
+func TestEngineCatchUpMaxMapsZeroToOff(t *testing.T) {
+	for _, tc := range []struct{ in, want int }{{0, -1}, {10, 10}, {3, 3}} {
+		got, err := engineCatchUpMax(tc.in)
+		if err != nil || got != tc.want {
+			t.Errorf("engineCatchUpMax(%d) = %d, %v; want %d", tc.in, got, err, tc.want)
+		}
+	}
+	if _, err := engineCatchUpMax(-1); err == nil {
+		t.Error("a negative --catchup-max must be rejected")
+	}
+}
+
+func TestWatchPollRejectsBadFlagsBeforeDoingAnything(t *testing.T) {
+	for _, args := range [][]string{
+		{"--max-posts-per-poll", "-1"},
+		{"--max-posts-per-poll", "0"},
+		{"--catchup-max", "-2"},
+	} {
+		root := NewRootCmd()
+		root.SetArgs(append([]string{"--config", "/nonexistent/config.toml", "mail", "watch", "poll", "--hook-url", "http://127.0.0.1:1/h"}, args...))
+		err := root.Execute()
+		if err == nil || !strings.Contains(err.Error(), strings.TrimPrefix(args[0], "--")) {
+			t.Errorf("%v: want a flag error, got %v", args, err)
+		}
 	}
 }

@@ -42,27 +42,90 @@ func TestAnyLostStateAnswerOnAStoredLinkRePrimes(t *testing.T) {
 	}
 }
 
-func TestRepeated4xxOnTheSameStoredLinkTriggersRePrime(t *testing.T) {
+func TestStoredLinkFailing4xxFor30MinTriggersRePrime(t *testing.T) {
 	h := newHarness(t)
 	h.mustPoll()
 	h.g.tokenFail, h.g.tokenCode = 400, "BadRequest"
-	for i := 1; i < stuckLimit; i++ {
-		h.advance(30 * time.Second)
+	start := h.now
+	for h.now.Sub(start) < 29*time.Minute {
+		h.advance(time.Minute)
 		if err := h.poll(); err == nil {
-			t.Fatalf("poll %d: 400 must surface", i)
-		}
-		if st := h.state(); st.StuckCount != i || st.Priming {
-			t.Fatalf("poll %d: stuck_count=%d priming=%v", i, st.StuckCount, st.Priming)
+			t.Fatal("400 must surface")
 		}
 	}
-	h.advance(30 * time.Second)
-	h.mustPoll() // 10th 400 → backstop → fresh prime (initial requests are not failed)
+	if st := h.state(); st.Priming || len(h.g.initialQuery) != 1 || st.StuckCount < 3 || st.StuckSince.IsZero() {
+		t.Fatalf("no re-prime before 30 min: %+v", st)
+	}
+	h.advance(2 * time.Minute)
+	h.mustPoll() // >= 30 min, >= 3 failures -> backstop -> fresh prime (initial requests are not failed)
 	h.g.tokenFail = 0
-	if !strings.Contains(h.log.String(), "consecutive HTTP 400 answers on the same stored delta link") {
+	if !strings.Contains(h.log.String(), "stored delta link has answered HTTP 400 for") {
 		t.Errorf("backstop must be logged:\n%s", h.log)
 	}
 	if st := h.state(); st.Priming || st.StuckCount != 0 || len(h.g.initialQuery) != 2 {
 		t.Errorf("backstop must re-prime: %+v, initial requests %d", st, len(h.g.initialQuery))
+	}
+}
+
+func TestShort404BurstKeepsTheCursor(t *testing.T) {
+	h := newHarness(t)
+	h.mustPoll()
+	link := h.state().DeltaLink
+	for round := 0; round < 3; round++ { // 20 min of 404s, then one success, three times
+		h.g.tokenFail, h.g.tokenCode = 404, "ErrorItemNotFound"
+		for i := 0; i < 20; i++ {
+			h.advance(time.Minute)
+			_ = h.poll()
+		}
+		h.g.tokenFail = 0
+		h.advance(time.Minute)
+		h.mustPoll()
+		if st := h.state(); st.StuckCount != 0 || !st.StuckSince.IsZero() {
+			t.Fatalf("success must reset the backstop: %+v", st)
+		}
+	}
+	if len(h.g.initialQuery) != 1 || h.state().DeltaLink != link {
+		t.Errorf("a transient 404 burst must not throw the cursor away (initial requests %d)", len(h.g.initialQuery))
+	}
+}
+
+func TestBackstopCountsOnlyTheSameLink(t *testing.T) {
+	h := newHarness(t)
+	h.mustPoll()
+	h.g.tokenFail, h.g.tokenCode = 400, "BadRequest"
+	for i := 0; i < 25; i++ {
+		h.advance(time.Minute)
+		_ = h.poll()
+	}
+	// The stored link changes (e.g. state restored from elsewhere): a new clock.
+	st := h.state()
+	st.DeltaLink += "0"
+	if err := h.store.Save(mbx, "inbox", &st); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 10; i++ {
+		h.advance(time.Minute)
+		_ = h.poll()
+	}
+	if len(h.g.initialQuery) != 1 {
+		t.Errorf("failures on a different link must not add up to 30 min, got %d initial requests", len(h.g.initialQuery))
+	}
+}
+
+func TestDeletedMailboxDoesNotLoopRePrimes(t *testing.T) {
+	h := newHarness(t)
+	h.mustPoll()
+	h.g.tokenFail, h.g.tokenCode = 404, "ErrorInvalidUser"
+	h.g.initFail = 404
+	for i := 0; i < 240; i++ { // 2 h at 30 s
+		h.advance(30 * time.Second)
+		_ = h.poll()
+	}
+	if n := strings.Count(h.log.String(), "treating the cursor as lost"); n != 1 {
+		t.Errorf("want exactly one backstop re-prime in 2 h, got %d", n)
+	}
+	if st := h.state(); st.StuckCount != 0 {
+		t.Errorf("failing initial requests (no stored link) must not feed the backstop: %+v", st)
 	}
 }
 
@@ -71,7 +134,7 @@ func TestAuthAndThrottlingErrorsDoNotTriggerTheBackstop(t *testing.T) {
 		h := newHarness(t)
 		h.mustPoll()
 		h.g.tokenFail, h.g.tokenCode = status, "Nope"
-		for i := 0; i < stuckLimit+3; i++ {
+		for i := 0; i < 8; i++ {
 			h.advance(11 * time.Minute) // past any Retry-After
 			_ = h.poll()
 		}
@@ -399,6 +462,7 @@ func TestRedactDoesNotEatTheSeparator(t *testing.T) {
 	for in, want := range map[string]string{
 		"graph /users/a/messages/delta?#3fa2c1d0: 410 Gone": "graph /users/a/messages/delta?#3fa2c1d0: 410 Gone",
 		"get https://h/p?a=1: 410 Gone":                     "get https://h/p?#" + shortHash("a=1") + ": 410 Gone",
+		"get https://h/p?#3fa2c1d0: 410 Gone":               "get https://h/p?#3fa2c1d0: 410 Gone",
 	} {
 		if got := Redact(in); got != want {
 			t.Errorf("Redact(%q) = %q, want %q", in, got, want)
