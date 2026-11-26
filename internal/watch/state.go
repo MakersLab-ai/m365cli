@@ -15,6 +15,11 @@ const seenCap = 2000
 type State struct {
 	DeltaLink string   `json:"delta_link"`
 	Seen      []string `json:"seen"`
+	// Floor is the receivedDateTime lower bound the cursor was primed with
+	// (RFC 3339, UTC). Mail received before it is never delivered as new, even
+	// if Graph later reports a change on it. Empty for cursors primed before
+	// the floor existed: those keep the old behaviour.
+	Floor string `json:"floor,omitempty"`
 }
 
 // FileStore stores State as 0600 JSON files under dir.

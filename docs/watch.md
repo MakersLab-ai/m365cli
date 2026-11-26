@@ -44,7 +44,16 @@ POSTed as JSON (gog-compatible):
 ## Reliability
 
 - **First run primes the cursor** and delivers nothing — existing mail is not
-  replayed as "new".
+  replayed as "new". On Graph, priming only covers mail received in the last
+  hour (`$filter=receivedDateTime ge <floor>`), and only ids are kept in memory,
+  so a large inbox primes in seconds instead of paging every message with its
+  body. The floor is stored with the cursor; mail received before it is never
+  delivered as new, even if Graph later reports a change on it (e.g. read flag).
+- **Expired cursor recovers itself:** when Graph answers `410 Gone` /
+  `SyncStateNotFound` (the delta token's sync state is gone), the watcher drops
+  the cursor and primes a fresh one in the same poll. Mail received while the
+  cursor was dead is **not** delivered (it stays in the mailbox), and a hint goes
+  to stderr. Other errors leave the cursor untouched and are retried.
 - **Delivery-before-cursor-advance:** the cursor advances only after the webhook
   returns 2xx. A failing hook is retried on the next interval, so wake-ups are not
   lost.
