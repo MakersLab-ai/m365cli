@@ -241,7 +241,7 @@ func TestWatchScopeHonoursWatchMailboxesSubset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WatchScope: %v", err)
 	}
-	if len(got) != 1 || got[0] != "B@x.com" {
+	if len(got) != 1 || got[0] != "b@x.com" { // allowed_mailboxes spelling
 		t.Errorf("scope = %v, want only the watch_mailboxes entry", got)
 	}
 }
@@ -268,5 +268,26 @@ func TestLoadParsesWatchMailboxes(t *testing.T) {
 	}
 	if err := (&Config{TenantID: "t", ClientID: "c", CertPath: "p", AllowedMailboxes: []string{"a@x.com"}, WatchMailboxes: []string{"zzz@x.com"}}).Validate(); err != nil {
 		t.Errorf("a watch_mailboxes typo must not fail Validate (it would break every command): %v", err)
+	}
+}
+
+func TestWatchScopeNormalizesCaseAndDedupes(t *testing.T) {
+	cfg := &Config{
+		AllowedMailboxes: []string{"Office@Contoso.com", "*@contoso.com"},
+		WatchMailboxes:   []string{"office@contoso.com", "OFFICE@contoso.com", "Info@Contoso.com"},
+	}
+	got, _, err := cfg.WatchScope()
+	if err != nil {
+		t.Fatalf("WatchScope: %v", err)
+	}
+	// The concrete allowed spelling wins (same state file name as v0.2.x);
+	// glob-matched entries are lower-cased; duplicates collapse.
+	if len(got) != 2 || got[0] != "Office@Contoso.com" || got[1] != "info@contoso.com" {
+		t.Errorf("scope = %v, want [Office@Contoso.com info@contoso.com]", got)
+	}
+	cfg.WatchMailboxes = nil
+	cfg.AllowedMailboxes = []string{"a@x.com", "A@X.com"}
+	if got, _, _ := cfg.WatchScope(); len(got) != 1 {
+		t.Errorf("default scope must dedupe case-insensitively, got %v", got)
 	}
 }

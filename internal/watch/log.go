@@ -98,7 +98,14 @@ func Redact(s string) string {
 	s = strings.ReplaceAll(s, "\n", "; ") // errors.Join → one log line
 	s = reURLQuery.ReplaceAllStringFunc(s, func(m string) string {
 		sub := reURLQuery.FindStringSubmatch(m)
-		return sub[1] + "?#" + shortHash(sub[2])
+		q := sub[2]
+		if strings.HasPrefix(q, "#") {
+			return m // already redacted (graph.RedactURL); don't hash the hash
+		}
+		// Trailing punctuation belongs to the sentence ("...?x=1: 410"), not
+		// to the query.
+		trimmed := strings.TrimRight(q, ":,;.)")
+		return sub[1] + "?#" + shortHash(trimmed) + q[len(trimmed):]
 	})
 	s = reToken.ReplaceAllString(s, "$1=<redacted>")
 	s = reBearer.ReplaceAllString(s, "$1 <redacted>")

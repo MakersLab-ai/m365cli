@@ -48,7 +48,7 @@ func TestFakeGraphEvictsALinkHeldTwoPagesBack(t *testing.T) {
 	l2 := next(l1)
 	_ = next(l2)
 	_, err := c.MailboxDeltaPage(ctx, mbx, l1, 2)
-	if !graph.IsSyncStateNotFound(err) {
+	if !graph.IsSyncStateLost(err) {
 		t.Fatalf("a link two pages back must be 410 SyncStateNotFound, got %v", err)
 	}
 	var ae *graph.APIError
@@ -240,10 +240,13 @@ func TestHookDownCursorKeepsAdvancingAndPendingIsDeliveredLater(t *testing.T) {
 	if p := h.state().Pending; len(p) != 0 {
 		t.Errorf("pending must be empty after delivery, got %d", len(p))
 	}
+	if h.hook.count() != 6 {
+		t.Errorf("want 6 POSTs (one per message), got %d", h.hook.count())
+	}
 	h.advance(30 * time.Second)
 	h.mustPoll()
-	if h.hook.count() != 1 {
-		t.Errorf("second tick after recovery: %d POSTs, want 1", h.hook.count())
+	if h.hook.count() != 6 {
+		t.Errorf("second tick after recovery: %d POSTs, want 6", h.hook.count())
 	}
 }
 
@@ -266,40 +269,35 @@ func TestPendingIsRetriedWithBackoffNotEveryPoll(t *testing.T) {
 	}
 }
 
-func TestPendingIsDroppedAfterMaxAgeOrAttempts(t *testing.T) {
+func TestPendingIsDroppedByAgeOnlyNotByAttempts(t *testing.T) {
 	h := newHarness(t)
 	h.mustPoll()
 	h.hook.setDown(true)
 	h.newMail("n1")
-	_ = h.poll()
-	h.advance(25 * time.Hour)
+	for i := 0; i < 120; i++ { // 20 h of polling every 10 min: ~120 failed attempts
+		h.advance(10 * time.Minute)
+		_ = h.poll()
+	}
+	st := h.state()
+	if len(st.Pending) != 1 || st.Pending[0].Attempts < 100 {
+		t.Fatalf("after 20 h of hook outage the message must still be pending (attempts are not a limit), got %+v", st.Pending)
+	}
+	if strings.Contains(h.log.String(), "dropping") {
+		t.Fatalf("nothing may be dropped before 24 h:\n%s", h.log)
+	}
+	h.advance(4*time.Hour + 15*time.Minute) // found at +10 min → now > 24 h since found
 	_ = h.poll()
 	if p := h.state().Pending; len(p) != 0 {
-		t.Fatalf("pending older than 24h must be dropped, got %+v", p)
+		t.Fatalf("pending older than 24 h must be dropped, got %+v", p)
 	}
-	if !strings.Contains(h.log.String(), "dropping undelivered message") {
-		t.Errorf("drop must be logged:\n%s", h.log)
+	if !strings.Contains(h.log.String(), "dropping undelivered message #") || !strings.Contains(h.log.String(), "max age 24h0m0s") {
+		t.Errorf("drop must be logged clearly:\n%s", h.log)
 	}
 	h.hook.setDown(false)
 	h.advance(time.Minute)
 	h.mustPoll()
 	if h.hook.count() != 0 {
 		t.Error("a dropped message must not be delivered later")
-	}
-
-	// Attempts cap.
-	h2 := newHarness(t)
-	h2.opts.PendingMaxTry = 2
-	h2.restart()
-	h2.mustPoll()
-	h2.hook.setDown(true)
-	h2.newMail("n1")
-	for i := 0; i < 4; i++ {
-		h2.advance(10 * time.Minute)
-		_ = h2.poll()
-	}
-	if p := h2.state().Pending; len(p) != 0 {
-		t.Errorf("pending must be dropped after max attempts, got %+v", p)
 	}
 }
 
@@ -336,8 +334,8 @@ func TestSyncStateLostAtSteadyStateRePrimesAndCatchesUpCapped(t *testing.T) {
 			if !strings.Contains(h.log.String(), "sync state lost") {
 				t.Fatalf("expected the loss to be logged:\n%s", h.log)
 			}
-			if h.hook.count() != 2 {
-				t.Fatalf("want exactly one catch-up POST (none from the prime), got %d POSTs", h.hook.count()-1)
+			if h.hook.count() != 11 {
+				t.Fatalf("want 10 catch-up POSTs (one message each, none from the prime), got %d", h.hook.count()-1)
 			}
 			got := h.hook.deliveredIDs(t)[1:]
 			if len(got) != 10 {
@@ -356,8 +354,8 @@ func TestSyncStateLostAtSteadyStateRePrimesAndCatchesUpCapped(t *testing.T) {
 
 			h.advance(30 * time.Second)
 			h.mustPoll()
-			if h.hook.count() != 2 {
-				t.Errorf("second tick after re-prime: %d POSTs, want 2", h.hook.count())
+			if h.hook.count() != 11 {
+				t.Errorf("second tick after re-prime: %d POSTs, want 11", h.hook.count())
 			}
 		})
 	}
@@ -438,8 +436,8 @@ func TestV1MigrationWithRecentMtimeAnchorsCatchUp(t *testing.T) {
 	}
 	h.advance(30 * time.Second)
 	h.mustPoll()
-	if h.hook.count() != 1 {
-		t.Errorf("second tick after migration: %d POSTs, want 1", h.hook.count())
+	if h.hook.count() != 2 {
+		t.Errorf("second tick after migration: %d POSTs, want 2 (one per caught-up message)", h.hook.count())
 	}
 	assertV1Untouched(t, h, data, v1mtime)
 }
@@ -458,8 +456,9 @@ func TestV1MigrationOlderThan48hDeliversNothing(t *testing.T) {
 	if h.hook.count() != 0 {
 		t.Errorf("a v1 cursor dead for 72h must come back \"from now\": %d POSTs", h.hook.count())
 	}
-	if len(h.g.listQueries) != 0 {
-		t.Errorf("no catch-up query expected, got %v", h.g.listQueries)
+	// The only catch-up is the one for mail arriving during the prime itself.
+	if len(h.g.listQueries) != 1 || !strings.Contains(unescapeQuery(h.g.listQueries[0]), "receivedDateTime ge "+h.now.Add(-30*time.Second).UTC().Format(time.RFC3339)) {
+		t.Errorf("catch-up must be anchored at the prime start, got %v", h.g.listQueries)
 	}
 	assertV1Untouched(t, h, data, v1mtime)
 }
@@ -781,7 +780,7 @@ func TestV1SyncerHitsTheEvictionLoopTheV2EngineAvoids(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		last = s.SyncOnce(context.Background(), mbx)
 	}
-	if !graph.IsSyncStateNotFound(last) {
+	if !graph.IsSyncStateLost(last) {
 		t.Fatalf("expected the v1 syncer to end in SyncStateNotFound, got %v", last)
 	}
 }

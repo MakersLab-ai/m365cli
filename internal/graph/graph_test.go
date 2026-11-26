@@ -336,7 +336,7 @@ func TestPatchForSiteEnforcesAllowlist(t *testing.T) {
 	}
 }
 
-func TestAPIErrorIsTypedAndDetectsSyncStateNotFound(t *testing.T) {
+func TestAPIErrorIsTypedAndDetectsLostSyncState(t *testing.T) {
 	cfg := &config.Config{AllowedMailboxes: []string{"agent@example.com"}}
 	for _, tc := range []struct {
 		status int
@@ -345,12 +345,21 @@ func TestAPIErrorIsTypedAndDetectsSyncStateNotFound(t *testing.T) {
 	}{
 		{410, "SyncStateNotFound", true},
 		{400, "syncStateNotFound", true},
-		{410, "resyncRequired", false},
+		{410, "resyncRequired", true},
+		{400, "resyncRequired", true},
+		{400, "SyncStateInvalid", true},
+		{410, "", true},                   // any 410, even without a JSON error code
+		{410, "Whatever", true},           // any 410
 		{500, "SyncStateNotFound", false}, // only 4xx counts
 		{404, "ErrorItemNotFound", false},
+		{400, "BadRequest", false},
 	} {
 		c := newTestClient(t, cfg, func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(tc.status)
+			if tc.code == "" {
+				_, _ = w.Write([]byte(`<html>gone</html>`))
+				return
+			}
 			_, _ = w.Write([]byte(`{"error":{"code":"` + tc.code + `","message":"m"}}`))
 		})
 		_, err := c.MailboxDelta(context.Background(), "agent@example.com", "mailFolders/inbox/messages/delta?$deltatoken=SECRETTOKEN")
@@ -358,8 +367,8 @@ func TestAPIErrorIsTypedAndDetectsSyncStateNotFound(t *testing.T) {
 		if !errors.As(err, &ae) || ae.Status != tc.status || ae.Code != tc.code {
 			t.Fatalf("%d %s: want typed APIError, got %#v", tc.status, tc.code, err)
 		}
-		if IsSyncStateNotFound(err) != tc.lost {
-			t.Errorf("%d %s: IsSyncStateNotFound = %v, want %v", tc.status, tc.code, !tc.lost, tc.lost)
+		if IsSyncStateLost(err) != tc.lost {
+			t.Errorf("%d %q: IsSyncStateLost = %v, want %v", tc.status, tc.code, !tc.lost, tc.lost)
 		}
 		if strings.Contains(err.Error(), "SECRETTOKEN") {
 			t.Errorf("error leaks the delta token: %v", err)

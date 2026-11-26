@@ -20,13 +20,13 @@ Tuning flags (Graph engine, defaults shown):
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--catchup-max` | `10` | After a re-prime, deliver at most this many recent messages. `-1` disables the catch-up (`0` means the default). |
+| `--catchup-max` | `10` | After a (re-)prime, deliver at most this many recent messages. `0` = no catch-up. |
 | `--catchup-window` | `24h` | The catch-up never reaches further back than this. |
-| `--catchup-max-age` | `48h` | If the last good state is older than this, there is no catch-up at all: the mailbox resumes "from now". |
-| `--pending-max-age` | `24h` | An undelivered message is dropped (logged) after waiting this long. |
-| `--pending-max-attempts` | `100` | ... or after this many failed delivery attempts. |
+| `--catchup-max-age` | `48h` | If the last good state is older than this, nothing older than the prime start is caught up: the mailbox resumes "from now". |
+| `--pending-max-age` | `24h` | An undelivered message is dropped (logged) once it has waited this long. Failed attempts are not counted; only age. |
+| `--max-posts-per-poll` | `20` | Hook POSTs (one message each) per mailbox per poll; the rest waits for the next poll. |
 | `--max-pages-per-poll` | `500` | Delta pages per mailbox per poll (200 ids each). A larger prime continues on the next poll. |
-| `--poll-deadline` | `3m` | Delta paging time per mailbox per poll, so one big mailbox cannot stall the others. |
+| `--poll-deadline` | `3m` | Paging/delivery time per mailbox per poll, so one big mailbox cannot stall the others. |
 
 `--include-changed` / `--include-deleted` still work but switch to the v1
 engine (see "Engines").
@@ -46,17 +46,31 @@ watch_mailboxes   = ["office@contoso.com"]   # read both, watch only one
 ```
 
 Every `watch_mailboxes` entry must be a concrete address that
-`allowed_mailboxes` permits; otherwise the watcher refuses to start. (Other
-commands are not affected by a `watch_mailboxes` typo.)
+`allowed_mailboxes` permits; otherwise the watcher refuses to start (other
+commands are not affected by a `watch_mailboxes` typo). Matching is
+case-insensitive and duplicates collapse. An entry that matches a concrete
+`allowed_mailboxes` entry uses that entry's spelling, so the state file name
+stays the one `--all` (and v0.2.x) always used; an entry allowed only via a
+glob is lower-cased.
+
+**Old binaries (v0.2.x) ignore `watch_mailboxes`:** after a rollback `--all`
+watches every allowed mailbox again.
 
 ### Off switch
 
 `~/.config/m365cli/watch.disabled` is honoured by the supervisor that starts
 the watcher, not by `m365` itself; nothing here changes that contract.
 
+### One watcher per mailbox
+
+The engine holds an exclusive lock (`watch/<mailbox>__<folder>.v2.lock`,
+`flock`) for every mailbox it polls. A second watcher on the same state
+directory gets `another watcher holds ...` for that mailbox instead of racing
+on the state file. The OS releases the lock when the process exits.
+
 ## Payload
 
-POSTed as JSON (gog-compatible, unchanged):
+POSTed as JSON (gog-compatible, unchanged), **exactly one message per POST**:
 
 ```json
 {
@@ -66,13 +80,14 @@ POSTed as JSON (gog-compatible, unchanged):
     { "id": "...", "threadId": "...", "from": "...", "to": "...",
       "subject": "...", "date": "...", "snippet": "...",
       "body": "...", "bodyTruncated": false, "labels": ["INBOX", "UNREAD"] }
-  ],
-  "deletedMessageIds": ["..."]
+  ]
 }
 ```
 
-`body` is present only with `--include-body`; `deletedMessageIds` only with
-`--include-deleted` (v1 engine). One POST per poll carries up to 50 messages.
+`body` is present only with `--include-body`. Receivers that render only
+`messages[0]` (as the fleet hook template does) therefore see every message.
+`deletedMessageIds` appears only with `--include-deleted` (v1 engine, which
+still batches per round).
 
 ## Engines
 
@@ -104,16 +119,18 @@ that model:
    `next_link` (or the final `delta_link`) and the newly found ids in
    `pending`. A crash or a 5xx mid-pagination resumes from the last saved
    page, never from the round start.
-3. **Per-message fetch.** Each pending id is fetched with
-   `GET messages/{id}?$select=<production fields>` (body only with
-   `--include-body`) and the payload is built exactly as before. A `404`
-   (moved or deleted meanwhile) is skipped and logged, never retried.
+3. **Per-message fetch, one message per POST.** Pending ids are delivered
+   oldest first: `GET messages/{id}?$select=<production fields>` (body only
+   with `--include-body`), then one POST with that one message. A `404`
+   (moved or deleted meanwhile) is skipped and logged, never retried. A
+   failed fetch (5xx) delays only that message; a `429` stops this poll's
+   deliveries.
 4. **Delivery never holds the cursor.** If the hook fails, the cursor has
-   already advanced; the ids stay in `pending` and are retried with backoff
-   (30 s doubling to 5 min) until delivered, or dropped with a log line after
-   `--pending-max-age` / `--pending-max-attempts`. At most 500 ids are kept
-   pending (oldest dropped first, logged). This is a bridge until a real
-   outbox (one message per POST) lands.
+   already advanced. Delivery stops for this poll (nothing newer overtakes the
+   failed message) and the queue backs off (30 s doubling to 5 min). Ids stay
+   in `pending` until delivered or until they are older than
+   `--pending-max-age` (24 h), then they are dropped with a log line. At most
+   500 ids are kept pending (oldest dropped first, logged).
 5. **Second tick = 0 POSTs.** After a delivery, a restart or a re-prime, a
    poll with no new mail sends nothing.
 6. **Floor.** Old mail moved or restored into the folder shows up as
@@ -122,29 +139,38 @@ that model:
 
 ### First run, token loss and re-prime
 
-- **First run** (no state at all): IDs-only prime. Every existing id is marked
-  seen; nothing is delivered. Memory stays flat: ids are streamed page by page
-  and the seen list is capped (a 35k mailbox primed in 55 s at 14 MB RSS in
-  the measurement).
-- **Token loss** (`syncStateNotFound` on any 4xx, matched case-insensitively —
-  observed as `410`, documented also as `400`): automatic IDs-only re-prime in
-  the same poll. The prime itself delivers nothing.
-- **Catch-up after a re-prime.** Once the prime has its deltaLink, one list
+- **Prime.** Every prime is IDs-only: existing ids are marked seen, nothing
+  from the prime itself is delivered. Memory stays flat: ids are streamed page
+  by page and the seen list is capped (a 35k mailbox primed in 55 s at 14 MB
+  RSS in the measurement). A prime is sliced by `--max-pages-per-poll` and
+  `--poll-deadline`; the next poll continues from the saved page.
+- **Lost cursor.** Re-prime automatically, in the same poll, when a stored
+  delta link answers:
+  - any `410 Gone` (whatever the body: JSON, empty or HTML);
+  - any 4xx whose `error.code` is `syncStateNotFound`, `resyncRequired` or
+    `syncStateInvalid` (case-insensitive; the docs mention `400` as well);
+  - **backstop:** 10 consecutive 4xx answers (other than 401, 403 and 429) on
+    the same stored link. These are logged as
+    `N consecutive HTTP <status> answers on the same stored delta link`.
+  A re-prime is attempted at most once per poll.
+- **Catch-up after every prime.** Once the prime has its deltaLink, one list
   query fetches mail received since the **anchor**:
   `receivedDateTime ge max(anchor, now - 24h)`, newest first, at most 10
-  (`--catchup-max`, `--catchup-window`). Ids already known before the loss
-  are skipped; the rest are delivered oldest first.
-- **Anchor.** `last_success_at` from the v2 state (the last time a delta round
-  reached its deltaLink). On the first upgrade from v1 it is the **mtime of
-  the v1 file** (v0.2.x rewrote it on every successful poll). On a corrupt v2
-  file it is that file's mtime.
-- **48 h rule.** If the anchor is older than 48 h (`--catchup-max-age`), there
-  is no catch-up: a mailbox that was dead for days comes back "from now"
-  instead of flooding the agent with old mail.
-- **Large mailboxes.** A prime is sliced by `--max-pages-per-poll` and
-  `--poll-deadline`; the next poll continues from the saved page.
-- **Throttling.** On `429`/`503` the `Retry-After` header is honoured: the
-  mailbox is skipped until it expires.
+  (`--catchup-max`, `--catchup-window`). Ids known before the prime are
+  skipped; the rest are delivered oldest first, one per POST.
+- **Anchor.**
+  - Normally `last_success_at` from the v2 state, i.e. the last time a delta
+    round reached its deltaLink.
+  - On the first upgrade from v1, the **mtime of the v1 file**. v0.2.x
+    rewrote that file on every successful poll.
+  - On a corrupt v2 file, that file's mtime.
+  - On a first run without any state, the **prime start**. That way mail
+    arriving while the prime pages is not lost.
+- **48 h rule.** If the anchor is older than 48 h (`--catchup-max-age`), the
+  catch-up is anchored at the prime start instead. A mailbox that was dead for
+  days comes back "from now" and doesn't flood the agent with old mail.
+- **Throttling.** On `429`/`503` the `Retry-After` header is honoured (capped
+  at 10 min): the mailbox is skipped until it expires.
 
 ## State v2
 
@@ -156,40 +182,72 @@ that model:
 | `delta_link` / `next_link` | Cursor of the last completed round / resume point of the round in progress |
 | `priming`, `prime_started_at`, `floor` | Prime in progress; floor for moved-in old mail |
 | `seen` | Recent ids, append order; the newest 2000 are kept |
-| `pending` | Found but not yet delivered: id, `found_at`, attempts, next attempt |
-| `catch_up` | Scheduled catch-up: anchor and the ids known before the loss |
+| `pending` | Found but not yet delivered: id, `found_at`, attempts, per-message fetch backoff |
+| `catch_up` | Scheduled catch-up: anchor and the ids known before the prime |
 | `last_success_at`, `last_round_completed_at`, `primed_at` | In-sync time, last steady round, last prime |
-| `error_class`, `error_count`, `last_error_at` | `sync_state_lost` / `throttled` / `auth` / `transient` / `other`, reset on success |
+| `error_class`, `error_count`, `last_error_at` | `sync_state_lost` / `throttled` / `auth` / `transient` / `other`; reset on success |
+| `stuck_link`, `stuck_count` | Backstop counter: consecutive 4xx answers on one stored link (hash) |
+| `deliver_failures`, `deliver_not_before` | Consecutive hook failures and the queue's backoff horizon |
 | `v1_seen_mtime` | mtime of the v1 file whose seen ids were merged |
 
-The file is rewritten on every successful poll, so its mtime is a liveness
-signal. A file that is unreadable, truncated, of another version or without a
-cursor is moved aside (`*.v2.json.corrupt-<unix>`) and the mailbox is
-re-primed (catch-up anchored on that file's mtime) instead of crash-looping.
+A file that is unreadable, truncated, of another version or without a cursor
+is moved aside (`*.v2.json.corrupt-<unix>`) and the mailbox is re-primed
+(catch-up anchored on that file's mtime) instead of crash-looping.
 
-## Upgrade and rollback
+## Monitoring
+
+**The file's mtime is not a liveness signal.** The file is also rewritten on
+failed polls (error counters, backoff). Read the JSON instead:
+
+| Read | Healthy | Alarm when |
+| --- | --- | --- |
+| `last_success_at` | within a few poll intervals | older than ~3 intervals (cursor not in sync) |
+| `error_class`, `error_count` | empty / 0 | `error_count` keeps growing; `auth` points at permissions |
+| `priming` | `false` | `true` for longer than a few polls (stuck prime) |
+| `len(pending)` | 0 | > 0 for long |
+| oldest `pending[].found_at` | — | older than a few minutes (hook down); the message is dropped at 24 h |
+
+The v1 file (`*.json` without `.v2`) is no longer written after the upgrade.
+A monitor must read the `.v2.json` file when it exists.
+
+## Upgrade, rollback and reset
 
 - **v1 → v2.** On the first run with a v1 file and no v2 file, v2 starts a fresh
   IDs-only prime (the v1 token carries the old body `$select` and is not
   reused), seeds `seen` from the v1 seen ids and anchors the catch-up on the
   v1 file's mtime (48 h rule applies). Mailboxes whose v1 cursor has been dead
   for longer than 48 h resume from now.
-- **The v1 file is never modified, renamed or deleted.** Rolling back to
-  v0.2.x finds its cursor exactly where it was.
+- **The v1 file is never modified, renamed or deleted.**
+- **Rollback is not guaranteed safe** (inferred, not yet measured). The v1
+  file is intact, but its token is probably evicted by the v2 prime (several
+  pages, each a new generation). In that case v0.2.x hits `410` and only
+  recovers by deleting its cursor. That triggers its old **full-body** first
+  run, which on a large mailbox can take hundreds of MB (OOM risk; see the
+  fleet runbook on re-priming). v0.2.x also ignores `watch_mailboxes`, so its
+  watch scope widens to every allowed mailbox. Plan a rollback like a re-prime.
 - **Forward again after a rollback.** If the v1 file is newer than the one v2
-  last merged, v0.2.x ran in between: its seen ids are merged into v2 and
+  last merged, v0.2.x ran in between. Its seen ids are merged into v2 and
   removed from `pending`, so mail it delivered is not delivered twice.
-- Monitoring that reads cursor ages from `watch/*.json` must prefer the
-  `.v2.json` file when it exists; the v1 file's mtime freezes after the upgrade.
+- **Resetting a mailbox.** Stop the watcher, then move the `.v2.json` file
+  aside. On the next start the mailbox re-primes.
+  - If the v1 file is still there, this **re-runs the v1 migration**. Its
+    catch-up is anchored on the v1 mtime, so within 48 h of the upgrade
+    messages that v2 already delivered can be delivered again (up to the
+    catch-up cap).
+  - For a reset "from now", move the v1 file aside too. A first run with no
+    state only catches up mail that arrives during the prime.
+  - Never delete files while the watcher runs: it holds the lock and rewrites
+    the state.
 
 ## Logging
 
 - Every line carries an ISO-8601 UTC timestamp. Error lines keep the
   `watch <mailbox>: ...` prefix; informational lines start with
   `m365 mail watch: ...`.
-- **No delta/next link, token or message body is ever logged.** URL query
-  strings are replaced by an 8-hex-digit hash (`.../messages/delta?#3fa2c1d0`)
-  so the same link can still be correlated; bearer tokens and stray
+- **No delta/next link, token, message id or message body is ever logged.**
+  URL query strings are replaced by an 8-hex-digit hash
+  (`.../messages/delta?#3fa2c1d0`) so the same link can still be correlated.
+  Message ids appear only as a hash (`#1a2b3c4d`). Bearer tokens and stray
   `$deltatoken=`/`$skiptoken=` values are redacted, including inside
   transport errors.
 - Identical error lines are logged at most once per minute per mailbox; the

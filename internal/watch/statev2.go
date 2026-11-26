@@ -13,12 +13,15 @@ import (
 const StateVersion = 2
 
 // PendingMsg is a message the delta cursor has already moved past but that was
-// not yet delivered to the hook. It is retried with backoff until delivered,
-// or dropped after PendingMaxAttempts / PendingMaxAge (logged).
+// not yet delivered to the hook. It is retried until delivered, or dropped
+// (logged) once it is older than PendingMaxAge.
 type PendingMsg struct {
-	ID            string    `json:"id"`
-	FoundAt       time.Time `json:"found_at"`
-	Attempts      int       `json:"attempts,omitempty"`
+	ID       string    `json:"id"`
+	FoundAt  time.Time `json:"found_at"`
+	Attempts int       `json:"attempts,omitempty"`
+	// NextAttemptAt delays only this message after a failed fetch (e.g. 5xx on
+	// GET messages/{id}). Hook failures back off the whole queue instead
+	// (StateV2.DeliverNotBefore) so delivery order is kept.
 	NextAttemptAt time.Time `json:"next_attempt_at,omitzero"`
 	// Floor is the state's floor when the id was found by the delta: if the
 	// message turns out to be received before it, it is old mail moved or
@@ -69,6 +72,16 @@ type StateV2 struct {
 	ErrorClass  string    `json:"error_class,omitempty"`
 	ErrorCount  int       `json:"error_count,omitempty"`
 	LastErrorAt time.Time `json:"last_error_at,omitzero"`
+
+	// StuckLink (hash) / StuckCount count consecutive non-transient 4xx answers
+	// on the same stored link; at stuckLimit the cursor is treated as lost.
+	StuckLink  string `json:"stuck_link,omitempty"`
+	StuckCount int    `json:"stuck_count,omitempty"`
+
+	// DeliverFailures / DeliverNotBefore: consecutive hook failures and the
+	// backoff horizon of the pending queue (oldest first, one message per POST).
+	DeliverFailures  int       `json:"deliver_failures,omitempty"`
+	DeliverNotBefore time.Time `json:"deliver_not_before,omitzero"`
 
 	// V1SeenMtime is the mtime of the v1 file whose seen ids were last merged
 	// in. A newer v1 file means v0.2.x ran after us (rollback); its seen ids
@@ -144,6 +157,25 @@ func (s *V2Store) Save(mailbox, folder string, st *StateV2) error {
 		return err
 	}
 	return writeFileAtomic(s.dir, filepath.Base(s.Path(mailbox, folder)), data)
+}
+
+// Lock takes an exclusive, non-blocking lock for (mailbox, folder) so two
+// watchers cannot race on the same state file. The lock lives as long as the
+// returned file stays open (and is released by the OS when the process dies).
+func (s *V2Store) Lock(mailbox, folder string) (*os.File, error) {
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		return nil, err
+	}
+	p := filepath.Join(s.dir, s.base(mailbox, folder)+".v2.lock")
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockFile(f); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("another watcher holds %s: %w", p, err)
+	}
+	return f, nil
 }
 
 // Quarantine moves a corrupt v2 file aside (<file>.corrupt-<unix>) so it can

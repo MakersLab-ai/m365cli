@@ -40,6 +40,15 @@ type fakeGraphSrv struct {
 	retryAft string
 	removed  []string // ids to report as @removed on the next delta page
 
+	evictBody  string // raw body for an evicted token (overrides the JSON error)
+	tokenFail  int    // status for EVERY token (stored-link) request; 0 = off
+	tokenCode  string
+	alwaysGone bool  // every delta request, initial included, answers 410
+	liveRounds bool  // a round in progress also picks up mail created meanwhile
+	msgFail    []int // statuses for the next per-message GETs
+	listFail   int   // fail the next n catch-up list requests with 503
+	listDup    bool  // list every hit twice
+
 	deltaReqs    int
 	deltaTokens  []string // the token of every token request, in order
 	initialQuery []string
@@ -97,6 +106,14 @@ func (f *fakeGraphSrv) link(kind string, g int) string {
 }
 
 func (f *fakeGraphSrv) writeErr(w http.ResponseWriter, status int, code string) {
+	if f.retryAft != "" && (status == 429 || status == 503) {
+		w.Header().Set("Retry-After", f.retryAft)
+	}
+	if code == "\x00raw" {
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(f.evictBody))
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if f.retryAft != "" && (status == 429 || status == 503) {
 		w.Header().Set("Retry-After", f.retryAft)
@@ -140,6 +157,10 @@ func (f *fakeGraphSrv) serveDelta(w http.ResponseWriter, r *http.Request) {
 		f.writeErr(w, st, "ServiceUnavailable")
 		return
 	}
+	if f.alwaysGone {
+		f.writeErr(w, 410, "SyncStateNotFound")
+		return
+	}
 	pageSize := 10
 	if p := r.Header.Get("Prefer"); strings.HasPrefix(p, "odata.maxpagesize=") {
 		pageSize, _ = strconv.Atoi(strings.TrimPrefix(p, "odata.maxpagesize="))
@@ -158,13 +179,24 @@ func (f *fakeGraphSrv) serveDelta(w http.ResponseWriter, r *http.Request) {
 		cur = fakeCursor{pos: 0, end: len(f.msgs)}
 	} else {
 		f.deltaTokens = append(f.deltaTokens, kind+"="+tok)
+		if f.tokenFail != 0 {
+			f.writeErr(w, f.tokenFail, f.tokenCode)
+			return
+		}
 		g, _ := strconv.Atoi(tok)
 		c, ok := f.gens[g]
 		if !ok || f.gen-g >= f.keep {
-			f.writeErr(w, f.evictSt, f.evictCd)
+			code := f.evictCd
+			if f.evictBody != "" {
+				code = "\x00raw"
+			}
+			f.writeErr(w, f.evictSt, code)
 			return
 		}
 		cur = c
+		if f.liveRounds {
+			cur.end = len(f.msgs)
+		}
 		if kind == "$deltatoken" {
 			cur.end = len(f.msgs)
 			if cur.pos == cur.end && len(f.removed) == 0 {
@@ -234,6 +266,12 @@ func (f *fakeGraphSrv) serveMessage(w http.ResponseWriter, r *http.Request, id s
 	f.msgGets++
 	sel := r.URL.Query().Get("$select")
 	f.msgSelects = append(f.msgSelects, sel)
+	if len(f.msgFail) > 0 {
+		st := f.msgFail[0]
+		f.msgFail = f.msgFail[1:]
+		f.writeErr(w, st, "ServerBusy")
+		return
+	}
 	m := f.find(id)
 	if m == nil || m.Deleted {
 		f.writeErr(w, 404, "ErrorItemNotFound")
@@ -245,6 +283,11 @@ func (f *fakeGraphSrv) serveMessage(w http.ResponseWriter, r *http.Request, id s
 
 func (f *fakeGraphSrv) serveList(w http.ResponseWriter, r *http.Request) {
 	f.listQueries = append(f.listQueries, r.URL.RawQuery)
+	if f.listFail > 0 {
+		f.listFail--
+		f.writeErr(w, 503, "ServiceUnavailable")
+		return
+	}
 	q := r.URL.Query()
 	filter := q.Get("$filter")
 	since, err := time.Parse(time.RFC3339, strings.TrimPrefix(filter, "receivedDateTime ge "))
@@ -265,7 +308,11 @@ func (f *fakeGraphSrv) serveList(w http.ResponseWriter, r *http.Request) {
 	}
 	var vals []string
 	for _, m := range hits {
-		vals = append(vals, fmt.Sprintf(`{"id":%q,"receivedDateTime":%q}`, m.ID, m.Received.UTC().Format(time.RFC3339)))
+		v := fmt.Sprintf(`{"id":%q,"receivedDateTime":%q}`, m.ID, m.Received.UTC().Format(time.RFC3339))
+		vals = append(vals, v)
+		if f.listDup {
+			vals = append(vals, v)
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"value":[` + strings.Join(vals, ",") + `]}`))
@@ -354,6 +401,9 @@ func newHarness(t *testing.T) *harness {
 
 // restart builds a fresh Engine on the same state dir (a process restart).
 func (h *harness) restart() {
+	if h.eng != nil {
+		h.eng.Close()
+	}
 	client := graph.New(&config.Config{AllowedMailboxes: []string{mbx}}, fakeTokens{})
 	client.BaseURL = h.g.srv.URL
 	logger := NewLogger(h.log)

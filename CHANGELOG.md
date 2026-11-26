@@ -17,19 +17,28 @@ cursor when the hook fails. See [docs/watch.md](docs/watch.md).
 - **IDs-only delta** (`changeType=created&$select=id`,
   `Prefer: odata.maxpagesize=200`); `@removed` ignored. Messages are fetched
   one by one for delivery with the production field list; `404` is skipped.
-- **Delivery no longer holds the cursor.** Undelivered ids stay pending and
-  are retried with backoff, dropped with a log line after 24 h / 100 attempts.
-- **Self-healing on token loss.** `syncStateNotFound` (any 4xx) triggers an
+- **One message per hook POST**, oldest first, up to 20 per poll (receivers
+  that render only `messages[0]` see every mail).
+- **Delivery no longer holds the cursor.** Undelivered ids stay pending, the
+  queue backs off on hook failures (order kept), and ids are dropped with a
+  log line only by age (24 h).
+- **Self-healing on token loss.** Any 410, or a 4xx with
+  `syncStateNotFound`/`resyncRequired`/`syncStateInvalid`, triggers an
   automatic, memory-bounded IDs-only re-prime plus a bounded catch-up (10
-  messages, 24 h; none if the last good state is older than 48 h).
+  messages, 24 h; anchored at the prime start if the last good state is older
+  than 48 h). Backstop: 10 consecutive 4xx on the same stored link (not
+  401/403/429) re-prime too. Every prime is followed by a catch-up, so mail
+  arriving during a first-run prime is delivered.
+- **Single-instance lock** (flock) per mailbox; `Retry-After` capped at 10 min.
 - **v1 → v2 migration** without touching the v1 file (rollback-safe); seen ids
   are seeded from v1, catch-up anchored on the v1 file's mtime.
 - **`watch_mailboxes`** in `config.toml` narrows `poll --all` to a subset of
-  `allowed_mailboxes` (default: all concrete entries, as before).
+  `allowed_mailboxes` (default: all concrete entries, as before);
+  case-insensitive, deduplicated.
 - **Logging:** ISO timestamps on every line, links/tokens/bodies redacted,
   identical errors rate-limited to one line per minute.
 - **Graph client:** typed `*graph.APIError` (status, `error.code`, parsed
   `Retry-After`); errors never include the request query string.
 
-Unchanged: the hook payload (byte-compatible), the EWS watcher, and
+Unchanged: the hook payload shape (byte-compatible per message), the EWS watcher, and
 `--include-changed` / `--include-deleted` (both keep using the v1 engine).

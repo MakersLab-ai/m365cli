@@ -29,6 +29,7 @@ func newMailWatchPollCmd() *cobra.Command {
 	var includeBody, includeChanged, includeDeleted bool
 	var maxBytes int
 	var eo watch.EngineOptions
+	var catchUpMax int
 
 	cmd := &cobra.Command{
 		Use:   "poll",
@@ -53,6 +54,13 @@ func newMailWatchPollCmd() *cobra.Command {
 				return err
 			}
 
+			if catchUpMax < 0 {
+				return fmt.Errorf("--catchup-max must be >= 0 (0 = no catch-up)")
+			}
+			eo.CatchUpMax = catchUpMax
+			if catchUpMax == 0 {
+				eo.CatchUpMax = -1 // engine: <0 = off, 0 = default
+			}
 			log := watch.NewLogger(os.Stderr)
 			hook := watch.NewHookClient(hookURL, hookToken)
 			stateDir := filepath.Join(filepath.Dir(flags.configPath), "watch")
@@ -92,11 +100,11 @@ func newMailWatchPollCmd() *cobra.Command {
 	cmd.Flags().IntVar(&maxBytes, "max-bytes", 20000, "max body bytes (over cap: truncate + bodyTruncated=true)")
 	cmd.Flags().BoolVar(&includeChanged, "include-changed", false, "also forward changed (not just new) messages (uses the v1 engine)")
 	cmd.Flags().BoolVar(&includeDeleted, "include-deleted", false, "also forward deleted message ids (uses the v1 engine)")
-	cmd.Flags().IntVar(&eo.CatchUpMax, "catchup-max", 10, "after a re-prime, deliver at most this many recent messages (-1 disables catch-up)")
+	cmd.Flags().IntVar(&catchUpMax, "catchup-max", 10, "after a (re-)prime, deliver at most this many recent messages (0 = no catch-up)")
 	cmd.Flags().DurationVar(&eo.CatchUpWindow, "catchup-window", 24*time.Hour, "after a re-prime, catch up at most this far back")
 	cmd.Flags().DurationVar(&eo.CatchUpMaxAge, "catchup-max-age", 48*time.Hour, "no catch-up at all when the last good state is older than this")
 	cmd.Flags().DurationVar(&eo.PendingMaxAge, "pending-max-age", 24*time.Hour, "drop an undelivered message after it waited this long")
-	cmd.Flags().IntVar(&eo.PendingMaxTry, "pending-max-attempts", 100, "drop an undelivered message after this many failed attempts")
+	cmd.Flags().IntVar(&eo.MaxPostsPoll, "max-posts-per-poll", 20, "hook POSTs (one message each) per mailbox per poll; the rest waits for the next poll")
 	cmd.Flags().IntVar(&eo.MaxPagesPoll, "max-pages-per-poll", 500, "delta pages per mailbox per poll (a large prime continues next poll)")
 	cmd.Flags().DurationVar(&eo.PollDeadline, "poll-deadline", 3*time.Minute, "delta paging time per mailbox per poll")
 	return cmd

@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -26,13 +28,12 @@ type EngineOptions struct {
 	PageSize      int           // Prefer: odata.maxpagesize (default 200)
 	MaxPagesPoll  int           // delta pages per mailbox per poll (default 500 = 100k ids)
 	PollDeadline  time.Duration // pagination time per mailbox per poll (default 3m)
-	CatchUpMax    int           // catch-up count cap after a re-prime (default 10; <0 disables)
+	CatchUpMax    int           // catch-up count cap after a prime (0 = default 10; <0 = off)
 	CatchUpWindow time.Duration // catch-up never reaches further back than this (default 24h)
-	CatchUpMaxAge time.Duration // anchor older than this → no catch-up at all (default 48h)
+	CatchUpMaxAge time.Duration // anchor older than this → catch-up only from the prime start (default 48h)
 	PendingMaxAge time.Duration // undelivered ids are dropped after this (default 24h)
-	PendingMaxTry int           // ... or after this many failed attempts (default 100)
 	PendingCap    int           // max pending ids; oldest dropped beyond (default 500)
-	BatchMax      int           // max messages per hook POST (default 50)
+	MaxPostsPoll  int           // max hook POSTs (one message each) per mailbox per poll (default 20)
 	FloorMargin   time.Duration // floor = prime start minus this (default 10m)
 }
 
@@ -57,9 +58,8 @@ func (o EngineOptions) withDefaults() EngineOptions {
 	defD(&o.CatchUpWindow, 24*time.Hour)
 	defD(&o.CatchUpMaxAge, 48*time.Hour)
 	defD(&o.PendingMaxAge, 24*time.Hour)
-	def(&o.PendingMaxTry, 100)
 	def(&o.PendingCap, 500)
-	def(&o.BatchMax, 50)
+	def(&o.MaxPostsPoll, 20)
 	defD(&o.FloorMargin, 10*time.Minute)
 	return o
 }
@@ -77,6 +77,15 @@ type Engine struct {
 	Now   func() time.Time
 
 	notBefore map[string]time.Time // mailbox → Retry-After horizon
+	locks     map[string]*os.File  // mailbox → held state lock
+}
+
+// Close releases the per-mailbox state locks.
+func (e *Engine) Close() {
+	for k, f := range e.locks {
+		f.Close()
+		delete(e.locks, k)
+	}
 }
 
 func (e *Engine) now() time.Time {
@@ -86,7 +95,15 @@ func (e *Engine) now() time.Time {
 	return time.Now()
 }
 
-const catchUpMaxAttempts = 5
+const (
+	catchUpMaxAttempts = 5
+	// stuckLimit consecutive non-transient 4xx answers on the same stored link
+	// are treated as a lost cursor (backstop for answers Graph may phrase
+	// differently from the documented lost-state codes).
+	stuckLimit = 10
+	// maxRetryAfter caps a server-requested backoff.
+	maxRetryAfter = 10 * time.Minute
+)
 
 // messageSelect is the production field list for the per-message fetch; the
 // hook payload is built from exactly these fields (see BuildHookPayload).
@@ -111,18 +128,37 @@ func (e *Engine) Poll(ctx context.Context, mailbox string) error {
 	if nb, ok := e.notBefore[mailbox]; ok && e.now().Before(nb) {
 		return nil // Graph asked us to back off (Retry-After)
 	}
+	if err := e.lock(mailbox); err != nil {
+		return err
+	}
 	st, err := e.load(mailbox)
 	if err != nil {
 		return err
 	}
+	deadline := e.now().Add(e.Opts.PollDeadline)
 	seen := newCappedSet(st.Seen, seenCap)
-	syncErr := e.syncDelta(ctx, mailbox, st, seen)
+	syncErr := e.syncDelta(ctx, mailbox, st, seen, deadline)
 	var catchErr error
 	if !st.Priming && st.CatchUp != nil {
 		catchErr = e.catchUp(ctx, mailbox, st, seen)
 	}
-	deliverErr := e.deliver(ctx, mailbox, st)
+	deliverErr := e.deliver(ctx, mailbox, st, deadline)
 	return errors.Join(syncErr, catchErr, deliverErr)
+}
+
+func (e *Engine) lock(mailbox string) error {
+	if _, ok := e.locks[mailbox]; ok {
+		return nil
+	}
+	f, err := e.Store.Lock(mailbox, e.Opts.Folder)
+	if err != nil {
+		return err
+	}
+	if e.locks == nil {
+		e.locks = map[string]*os.File{}
+	}
+	e.locks[mailbox] = f
+	return nil
 }
 
 // load returns the state to work on, handling first run, v1 migration,
@@ -180,38 +216,40 @@ func (e *Engine) load(mailbox string) (*StateV2, error) {
 	}
 }
 
-// startPrime resets the cursor for an IDs-only prime. anchor is the last time
-// the cursor was known to be in sync; when it is set and not older than
-// CatchUpMaxAge a catch-up is scheduled for after the prime.
+// startPrime resets the cursor for an IDs-only prime and schedules the
+// catch-up that runs once the prime has its deltaLink. anchor is the last time
+// the cursor was known to be in sync; without one (first run), or when it is
+// older than CatchUpMaxAge, the catch-up is anchored at the prime start so
+// mail that arrives while the prime pages is still delivered.
 func (e *Engine) startPrime(mailbox string, st *StateV2, anchor time.Time, why string) {
 	now := e.now()
 	st.DeltaLink, st.NextLink = "", ""
 	st.Priming, st.PrimeStartedAt = true, now
-	if st.CatchUp != nil {
-		return // a prime restarted before its catch-up ran keeps the original catch-up
+	st.StuckLink, st.StuckCount = "", 0
+	if st.CatchUp != nil || e.Opts.CatchUpMax < 0 {
+		return // a restarted prime keeps its original catch-up; or catch-up is off
 	}
-	switch {
-	case anchor.IsZero():
-	case e.Opts.CatchUpMax < 0:
-	case now.Sub(anchor) > e.Opts.CatchUpMaxAge:
-		e.Log.Infof("%s: %s: last good state %s is older than %s; resuming from now, no catch-up",
+	if !anchor.IsZero() && now.Sub(anchor) > e.Opts.CatchUpMaxAge {
+		e.Log.Infof("%s: %s: last good state %s is older than %s; resuming from now (no older mail delivered)",
 			mailbox, why, anchor.UTC().Format(time.RFC3339), e.Opts.CatchUpMaxAge)
-	default:
-		st.CatchUp = &CatchUp{Anchor: anchor, Exclude: append([]string(nil), st.Seen...)}
+		anchor = time.Time{}
 	}
+	if anchor.IsZero() {
+		anchor = now
+	}
+	st.CatchUp = &CatchUp{Anchor: anchor, Exclude: append([]string(nil), st.Seen...)}
 }
 
 // syncDelta pages the delta cursor, persisting after every page.
-func (e *Engine) syncDelta(ctx context.Context, mailbox string, st *StateV2, seen *cappedSet) error {
+func (e *Engine) syncDelta(ctx context.Context, mailbox string, st *StateV2, seen *cappedSet, deadline time.Time) error {
 	folder := e.Opts.Folder
-	start := e.now()
 	reprimed := false
 	var exclude *cappedSet
 	if st.CatchUp != nil {
 		exclude = newCappedSet(st.CatchUp.Exclude, 0)
 	}
 	for pages := 0; ; pages++ {
-		if pages >= e.Opts.MaxPagesPoll || e.now().Sub(start) > e.Opts.PollDeadline {
+		if pages >= e.Opts.MaxPagesPoll || e.now().After(deadline) {
 			if st.Priming {
 				e.Log.Infof("%s: prime paused after %d pages this poll; resumes from the saved page next poll", mailbox, pages)
 			}
@@ -221,12 +259,26 @@ func (e *Engine) syncDelta(ctx context.Context, mailbox string, st *StateV2, see
 		if link == "" {
 			link = st.DeltaLink
 		}
-		if link == "" {
+		stored := link != ""
+		if !stored {
 			link = e.initialDelta()
 		}
 		body, err := e.Graph.MailboxDeltaPage(ctx, mailbox, link, e.Opts.PageSize)
 		if err != nil {
-			if syncStateLost(err) && !reprimed {
+			lost := syncStateLost(err)
+			if !lost && stored && stuck4xx(err) {
+				if h := shortHash(link); st.StuckLink == h {
+					st.StuckCount++
+				} else {
+					st.StuckLink, st.StuckCount = h, 1
+				}
+				if st.StuckCount >= stuckLimit {
+					e.Log.Errorf(mailbox, "%d consecutive HTTP %d answers on the same stored delta link; treating the cursor as lost",
+						st.StuckCount, httpStatus(err))
+					lost = true
+				}
+			}
+			if lost && !reprimed {
 				reprimed = true
 				e.Log.Errorf(mailbox, "delta sync state lost (%v); IDs-only re-prime", err)
 				e.startPrime(mailbox, st, st.LastSuccessAt, "sync state lost")
@@ -286,6 +338,7 @@ func (e *Engine) syncDelta(ctx context.Context, mailbox string, st *StateV2, see
 			}
 		}
 		st.ErrorClass, st.ErrorCount = "", 0
+		st.StuckLink, st.StuckCount = "", 0
 		st.Seen = seen.slice()
 		if st.CatchUp != nil && exclude != nil {
 			st.CatchUp.Exclude = exclude.slice()
@@ -324,9 +377,10 @@ func (e *Engine) catchUp(ctx context.Context, mailbox string, st *StateV2, seen 
 			queued := 0
 			for i := len(list.Value) - 1; i >= 0 && i >= len(list.Value)-e.Opts.CatchUpMax; i-- { // oldest first
 				id := list.Value[i].ID
-				if id == "" || exclude.has(id) || hasPending(st.Pending, id) {
+				if id == "" || exclude.has(id) {
 					continue
 				}
+				exclude.add(id) // a duplicate list entry must not queue twice
 				seen.add(id)
 				st.Pending = append(st.Pending, PendingMsg{ID: id, FoundAt: now, CatchUp: true})
 				queued++
@@ -349,23 +403,27 @@ func (e *Engine) catchUp(ctx context.Context, mailbox string, st *StateV2, seen 
 	return fmt.Errorf("catch-up: %w", err)
 }
 
-// deliver fetches and POSTs due pending messages (one POST, at most BatchMax
-// messages). The cursor is never held back by delivery: failures only
-// reschedule the pending ids.
-func (e *Engine) deliver(ctx context.Context, mailbox string, st *StateV2) error {
+// deliver POSTs pending messages oldest first, exactly one message per POST
+// (the fleet hook template renders only messages[0]), until the queue is
+// empty, MaxPostsPoll is reached or the poll deadline passes. The cursor is
+// never held back by delivery: a hook failure stops this poll's deliveries and
+// backs off the queue; the ids stay pending until they are older than
+// PendingMaxAge.
+func (e *Engine) deliver(ctx context.Context, mailbox string, st *StateV2, deadline time.Time) error {
 	if len(st.Pending) == 0 {
 		return nil
 	}
-	now := e.now()
 	folder := e.Opts.Folder
+	now := e.now()
 	changed := false
 
-	// Drop what has waited too long.
+	// Drop what has waited too long (age only; retries are not counted).
 	keep := st.Pending[:0:0]
 	for _, p := range st.Pending {
-		if now.Sub(p.FoundAt) > e.Opts.PendingMaxAge || p.Attempts >= e.Opts.PendingMaxTry {
-			e.Log.Errorf(mailbox, "dropping undelivered message #%s after %d attempt(s) over %s (limits: %d attempts, %s)",
-				shortHash(p.ID), p.Attempts, now.Sub(p.FoundAt).Round(time.Second), e.Opts.PendingMaxTry, e.Opts.PendingMaxAge)
+		if now.Sub(p.FoundAt) > e.Opts.PendingMaxAge {
+			e.Log.Errorf(mailbox, "dropping undelivered message #%s: pending since %s (%s > max age %s, %d failed attempt(s))",
+				shortHash(p.ID), p.FoundAt.UTC().Format(time.RFC3339), now.Sub(p.FoundAt).Round(time.Second),
+				e.Opts.PendingMaxAge, p.Attempts)
 			changed = true
 			continue
 		}
@@ -373,44 +431,39 @@ func (e *Engine) deliver(ctx context.Context, mailbox string, st *StateV2) error
 	}
 	st.Pending = keep
 
-	var batch []int // indexes into st.Pending
-	for i, p := range st.Pending {
-		if len(batch) >= e.Opts.BatchMax {
+	var errs []error
+	posts := 0
+	if now.Before(st.DeliverNotBefore) {
+		goto done // hook backoff
+	}
+	for i := 0; i < len(st.Pending); {
+		if posts >= e.Opts.MaxPostsPoll || (posts > 0 && e.now().After(deadline)) {
 			break
 		}
-		if p.NextAttemptAt.IsZero() || !now.Before(p.NextAttemptAt) {
-			batch = append(batch, i)
-		}
-	}
-	if len(batch) == 0 {
-		if changed {
-			return e.Store.Save(mailbox, folder, st)
-		}
-		return nil
-	}
-
-	var raws []json.RawMessage
-	var sent []int
-	gone := map[int]bool{}
-	var fetchErr error
-	for _, i := range batch {
 		p := &st.Pending[i]
+		if now.Before(p.NextAttemptAt) {
+			i++ // this message's fetch is backing off; the rest may proceed
+			continue
+		}
 		body, err := e.Graph.GetForMailbox(ctx, mailbox,
 			"messages/"+url.PathEscape(p.ID)+"?$select="+e.messageSelect())
 		if err != nil {
+			changed = true
 			if httpStatus(err) == 404 {
 				e.Log.Infof("%s: message #%s is gone (404: moved or deleted); skipped", mailbox, shortHash(p.ID))
-				gone[i] = true
+				st.Pending = append(st.Pending[:i], st.Pending[i+1:]...)
 				continue
 			}
-			e.retryLater(p, now)
+			p.Attempts++
+			p.NextAttemptAt = now.Add(backoffFor(p.Attempts))
+			errs = append(errs, fmt.Errorf("fetch message #%s: %s", shortHash(p.ID), hideID(err, p.ID)))
 			if ra := retryAfter(err); ra > 0 {
 				e.backoff(mailbox, now.Add(ra))
 			}
-			fetchErr = fmt.Errorf("fetch message #%s: %w", shortHash(p.ID), err)
 			if httpStatus(err) == 429 {
 				break
 			}
+			i++
 			continue
 		}
 		if !p.Floor.IsZero() {
@@ -420,59 +473,64 @@ func (e *Engine) deliver(ctx context.Context, mailbox string, st *StateV2) error
 			if json.Unmarshal(body, &probe) == nil && !probe.Received.IsZero() && probe.Received.Before(p.Floor) {
 				e.Log.Infof("%s: message #%s was received %s, before the watch floor %s (moved/restored mail); not delivered",
 					mailbox, shortHash(p.ID), probe.Received.UTC().Format(time.RFC3339), p.Floor.UTC().Format(time.RFC3339))
-				gone[i] = true
+				st.Pending = append(st.Pending[:i], st.Pending[i+1:]...)
+				changed = true
 				continue
 			}
 		}
-		raws = append(raws, body)
-		sent = append(sent, i)
-	}
-
-	var postErr error
-	if len(raws) > 0 {
-		payload, err := BuildHookPayload(mailbox, raws, nil,
+		payload, err := BuildHookPayload(mailbox, []json.RawMessage{body}, nil,
 			Options{Folder: folder, IncludeBody: e.Opts.IncludeBody, MaxBytes: e.Opts.MaxBytes})
 		if err == nil {
 			err = e.Hook.Post(ctx, payload)
 		}
+		changed = true
 		if err != nil {
-			for _, i := range sent {
-				e.retryLater(&st.Pending[i], now)
-			}
-			postErr = fmt.Errorf("deliver %d message(s): %w (kept pending; cursor already advanced)", len(sent), err)
-		} else {
-			for _, i := range sent {
-				gone[i] = true
-			}
+			p.Attempts++
+			st.DeliverFailures++
+			st.DeliverNotBefore = now.Add(backoffFor(st.DeliverFailures))
+			errs = append(errs, fmt.Errorf("deliver message #%s: %w (%d pending; cursor already advanced)",
+				shortHash(p.ID), err, len(st.Pending)))
+			break // keep the order: nothing newer goes out before this one
+		}
+		st.Pending = append(st.Pending[:i], st.Pending[i+1:]...)
+		st.DeliverFailures, st.DeliverNotBefore = 0, time.Time{}
+		posts++
+	}
+done:
+	if changed {
+		if err := e.Store.Save(mailbox, folder, st); err != nil {
+			errs = append(errs, err)
 		}
 	}
-	if len(gone) > 0 {
-		keep := st.Pending[:0:0]
-		for i, p := range st.Pending {
-			if !gone[i] {
-				keep = append(keep, p)
-			}
-		}
-		st.Pending = keep
-	}
-	if err := e.Store.Save(mailbox, folder, st); err != nil {
-		return errors.Join(postErr, fetchErr, err)
-	}
-	return errors.Join(postErr, fetchErr)
+	return errors.Join(errs...)
 }
 
-// retryLater records a failed attempt and schedules the next one with
-// exponential backoff (30s doubling, capped at 5m).
-func (e *Engine) retryLater(p *PendingMsg, now time.Time) {
-	p.Attempts++
+// backoffFor is 30s doubling per failure, capped at 5m.
+func backoffFor(failures int) time.Duration {
 	d := 30 * time.Second
-	for i := 1; i < p.Attempts && d < 5*time.Minute; i++ {
+	for i := 1; i < failures && d < 5*time.Minute; i++ {
 		d *= 2
 	}
 	if d > 5*time.Minute {
 		d = 5 * time.Minute
 	}
-	p.NextAttemptAt = now.Add(d)
+	return d
+}
+
+// hideID renders err with the message id replaced by its hash: Graph errors
+// carry the request path, and message ids do not belong in logs.
+func hideID(err error, id string) string {
+	s := err.Error()
+	for _, form := range []string{url.PathEscape(id), id} {
+		s = strings.ReplaceAll(s, form, "#"+shortHash(id))
+	}
+	return s
+}
+
+// stuck4xx: a client error that is neither auth (401/403) nor throttling (429).
+func stuck4xx(err error) bool {
+	s := httpStatus(err)
+	return s >= 400 && s < 500 && s != 401 && s != 403 && s != 429
 }
 
 func (e *Engine) capPending(mailbox string, p []PendingMsg) []PendingMsg {
@@ -484,6 +542,9 @@ func (e *Engine) capPending(mailbox string, p []PendingMsg) []PendingMsg {
 }
 
 func (e *Engine) backoff(mailbox string, until time.Time) {
+	if max := e.now().Add(maxRetryAfter); until.After(max) {
+		until = max
+	}
 	if e.notBefore == nil {
 		e.notBefore = map[string]time.Time{}
 	}
@@ -515,15 +576,6 @@ func (e *Engine) noteError(mailbox string, st *StateV2, err error) {
 	}
 }
 
-func hasPending(p []PendingMsg, id string) bool {
-	for _, x := range p {
-		if x.ID == id {
-			return true
-		}
-	}
-	return false
-}
-
 func filterPending(p []PendingMsg, drop *cappedSet) []PendingMsg {
 	var out []PendingMsg
 	for _, x := range p {
@@ -537,8 +589,8 @@ func filterPending(p []PendingMsg, drop *cappedSet) []PendingMsg {
 // Typed-error probes. The graph client's *graph.APIError implements these; the
 // watch package stays transport-neutral by asking for behaviour, not a type.
 func syncStateLost(err error) bool {
-	var s interface{ SyncStateNotFound() bool }
-	return errors.As(err, &s) && s.SyncStateNotFound()
+	var s interface{ SyncStateLost() bool }
+	return errors.As(err, &s) && s.SyncStateLost()
 }
 
 func httpStatus(err error) int {

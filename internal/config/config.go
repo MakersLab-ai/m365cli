@@ -99,6 +99,13 @@ func (c *Config) Validate() error {
 // It is checked here rather than in Validate so a watch_mailboxes typo stops
 // only the watcher, not every mail/calendar command.
 func (c *Config) WatchScope() (mailboxes, skippedGlobs []string, err error) {
+	seen := map[string]bool{}
+	add := func(m string) {
+		if k := normalize(m); !seen[k] {
+			seen[k] = true
+			mailboxes = append(mailboxes, m)
+		}
+	}
 	if len(c.WatchMailboxes) > 0 {
 		for _, m := range c.WatchMailboxes {
 			if strings.Contains(m, "*") {
@@ -107,7 +114,7 @@ func (c *Config) WatchScope() (mailboxes, skippedGlobs []string, err error) {
 			if !c.IsMailboxAllowed(m) {
 				return nil, nil, fmt.Errorf("config: watch_mailboxes entry %q is not in allowed_mailboxes", m)
 			}
-			mailboxes = append(mailboxes, strings.TrimSpace(m))
+			add(c.canonicalMailbox(m))
 		}
 		return mailboxes, nil, nil
 	}
@@ -116,12 +123,25 @@ func (c *Config) WatchScope() (mailboxes, skippedGlobs []string, err error) {
 			skippedGlobs = append(skippedGlobs, m)
 			continue
 		}
-		mailboxes = append(mailboxes, m)
+		add(strings.TrimSpace(m))
 	}
 	if len(mailboxes) == 0 {
 		return nil, skippedGlobs, fmt.Errorf("no concrete mailboxes in allowed_mailboxes")
 	}
 	return mailboxes, skippedGlobs, nil
+}
+
+// canonicalMailbox returns the allowed_mailboxes spelling of m when a concrete
+// entry matches it case-insensitively, so the watch state file name is the one
+// `--all` (and v0.2.x) always used; otherwise (matched via a glob) the
+// lower-cased address.
+func (c *Config) canonicalMailbox(m string) string {
+	for _, a := range c.AllowedMailboxes {
+		if !strings.Contains(a, "*") && normalize(a) == normalize(m) {
+			return strings.TrimSpace(a)
+		}
+	}
+	return normalize(m)
 }
 
 // IsMailboxAllowed reports whether addr matches allowed_mailboxes (exact or

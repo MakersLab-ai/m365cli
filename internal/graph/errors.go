@@ -38,23 +38,40 @@ func (e *APIError) Error() string {
 // HTTPStatus returns the response status code.
 func (e *APIError) HTTPStatus() int { return e.Status }
 
-// SyncStateNotFound reports whether Graph dropped the delta sync state the
-// request referred to. Microsoft documents this as a 40x with error code
-// syncStateNotFound (observed: 410 Gone; the docs also list 400), so any 4xx
-// with that code — matched case-insensitively — counts.
-func (e *APIError) SyncStateNotFound() bool {
-	return e.Status >= 400 && e.Status < 500 && strings.EqualFold(e.Code, "syncStateNotFound")
+// SyncStateLost reports whether Graph says the delta sync state a request
+// referred to is gone, so the link can never succeed again and the only way
+// out is a fresh prime:
+//   - any 410 Gone, whatever the body (observed with SyncStateNotFound; the
+//     delta query overview documents 410 as "restart with a full sync");
+//   - any 4xx whose error.code is syncStateNotFound, resyncRequired or
+//     syncStateInvalid (case-insensitive; Microsoft documents "a 40X-series
+//     error with error codes such as syncStateNotFound").
+func (e *APIError) SyncStateLost() bool {
+	if e.Status == http.StatusGone {
+		return true
+	}
+	if e.Status < 400 || e.Status >= 500 {
+		return false
+	}
+	for _, c := range lostStateCodes {
+		if strings.EqualFold(e.Code, c) {
+			return true
+		}
+	}
+	return false
 }
+
+var lostStateCodes = []string{"syncStateNotFound", "resyncRequired", "syncStateInvalid"}
 
 // RetryAfterDuration is the server-requested wait (Retry-After) for 429/503,
 // zero when absent or unparsable.
 func (e *APIError) RetryAfterDuration() time.Duration { return e.RetryAfter }
 
-// IsSyncStateNotFound reports whether err (or anything it wraps) is a lost
-// delta sync state.
-func IsSyncStateNotFound(err error) bool {
+// IsSyncStateLost reports whether err (or anything it wraps) is a lost delta
+// sync state (see APIError.SyncStateLost).
+func IsSyncStateLost(err error) bool {
 	var ae *APIError
-	return errors.As(err, &ae) && ae.SyncStateNotFound()
+	return errors.As(err, &ae) && ae.SyncStateLost()
 }
 
 const maxErrorBody = 300
