@@ -281,6 +281,11 @@ func (f *fakeGraphSrv) serveMessage(w http.ResponseWriter, r *http.Request, id s
 	if len(f.msgFail) > 0 {
 		st := f.msgFail[0]
 		f.msgFail = f.msgFail[1:]
+		if st == -1 { // transport error: drop the connection
+			conn, _, _ := w.(http.Hijacker).Hijack()
+			conn.Close()
+			return
+		}
 		f.writeErr(w, st, "ServerBusy")
 		return
 	}
@@ -343,6 +348,7 @@ type fakeHookSrv struct {
 	posts [][]byte
 	// reject: a POST whose payload contains this id is answered 422.
 	reject string
+	status int // answer every POST with this status (0 = normal)
 	tries  int
 }
 
@@ -359,6 +365,10 @@ func newFakeHook(t *testing.T) *fakeHookSrv {
 		var buf bytes.Buffer
 		_, _ = buf.ReadFrom(r.Body)
 		h.tries++
+		if h.status != 0 {
+			w.WriteHeader(h.status)
+			return
+		}
 		if h.reject != "" && strings.Contains(buf.String(), `"id":"`+h.reject+`"`) {
 			w.WriteHeader(422)
 			_, _ = w.Write([]byte("unprocessable"))
@@ -470,3 +480,11 @@ func (h *harness) seed(prefix string, n int) {
 func (h *harness) newMail(id string) { h.g.add(id, h.now) }
 
 func unescapeQuery(s string) string { u, _ := url.QueryUnescape(s); return u }
+
+// gets reads the per-message GET counter under the lock (a hijacked
+// connection lets the client see the error before the handler has returned).
+func (f *fakeGraphSrv) gets() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.msgGets
+}

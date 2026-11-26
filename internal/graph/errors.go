@@ -87,15 +87,14 @@ func newAPIError(method, path string, resp *http.Response, body []byte, now time
 			Message string `json:"message"`
 		} `json:"error"`
 	}
+	msg := string(body)
 	if json.Unmarshal(body, &env) == nil && env.Error.Code != "" {
-		e.Code, e.Message = env.Error.Code, env.Error.Message
-	} else {
-		msg := string(body)
-		if len(msg) > maxErrorBody {
-			msg = msg[:maxErrorBody] + "…"
-		}
-		e.Message = msg
+		e.Code, msg = env.Error.Code, env.Error.Message
 	}
+	if len(msg) > maxErrorBody {
+		msg = msg[:maxErrorBody] + "…"
+	}
+	e.Message = msg
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
 		e.RetryAfter = ParseRetryAfter(resp.Header.Get("Retry-After"), now)
 	}

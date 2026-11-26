@@ -85,6 +85,9 @@ func (l *Logger) Errorf(mailbox, format string, args ...any) {
 	fmt.Fprintf(l.W, "watch %s: %s%s [ts=%s]\n", mailbox, msg, suffix, now.UTC().Format(time.RFC3339))
 }
 
+// maxLogLine caps one log message (long error bodies).
+const maxLogLine = 1000
+
 var (
 	reURLQuery = regexp.MustCompile(`(https?://[^\s"'?<>]+)\?([^\s"'<>]*)`)
 	reToken    = regexp.MustCompile(`(?i)(\$?(?:deltatoken|skiptoken))=[^&\s"'<>]+`)
@@ -96,6 +99,9 @@ var (
 // be correlated across lines.
 func Redact(s string) string {
 	s = strings.ReplaceAll(s, "\n", "; ") // errors.Join → one log line
+	if len(s) > maxLogLine {
+		s = s[:maxLogLine] + "… (truncated)"
+	}
 	s = reURLQuery.ReplaceAllStringFunc(s, func(m string) string {
 		sub := reURLQuery.FindStringSubmatch(m)
 		q := sub[2]

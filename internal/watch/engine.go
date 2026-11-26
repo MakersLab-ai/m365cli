@@ -106,6 +106,10 @@ const (
 	stuckMinFailures = 3
 	// maxRejects hook 4xx answers for one message (poison message) → dropped.
 	maxRejects = 5
+	// maxBadRequests 400 answers to one message's fetch → dropped (fetch_400);
+	// maxBadRequestsPoll 400s in one poll end that poll's deliveries.
+	maxBadRequests     = 3
+	maxBadRequestsPoll = 5
 	// maxRetryAfter caps a server-requested backoff.
 	maxRetryAfter = 10 * time.Minute
 )
@@ -196,6 +200,11 @@ func (e *Engine) load(mailbox string) (*StateV2, error) {
 		return &st, nil
 
 	case LoadCorrupt:
+		// Salvage the drop counters and the number of undelivered messages if
+		// the file still parses at all (e.g. wrong version, no cursor).
+		var old StateV2
+		raw, _ := os.ReadFile(e.Store.Path(mailbox, folder))
+		parsed := json.Unmarshal(raw, &old) == nil
 		dst, qerr := e.Store.Quarantine(mailbox, folder, e.now())
 		if qerr != nil {
 			return nil, fmt.Errorf("corrupt v2 state could not be moved aside: %w", qerr)
@@ -205,6 +214,13 @@ func (e *Engine) load(mailbox string) (*StateV2, error) {
 		if hasV1 {
 			fresh.Seen, fresh.V1SeenMtime = append([]string(nil), v1.Seen...), v1mtime
 		}
+		lost := 1 // unreadable: the number of lost undelivered messages is unknown
+		if parsed {
+			fresh.DroppedTotal, fresh.DroppedByReason = old.DroppedTotal, old.DroppedByReason
+			fresh.LastDroppedAt, fresh.LastDroppedCount = old.LastDroppedAt, old.LastDroppedCount
+			lost = len(old.Pending)
+		}
+		e.recordDrop(fresh, dropStateReset, lost)
 		e.startPrime(mailbox, fresh, mtime, "corrupt v2 state")
 		return fresh, e.Store.Save(mailbox, folder, fresh)
 
@@ -230,7 +246,16 @@ func (e *Engine) load(mailbox string) (*StateV2, error) {
 func (e *Engine) startPrime(mailbox string, st *StateV2, anchor time.Time, why string) {
 	now := e.now()
 	st.DeltaLink, st.NextLink = "", ""
-	st.Priming, st.PrimeStartedAt = true, now
+	if st.Priming {
+		// The prime's own link was lost: restart it but keep its original
+		// start, so a prime that never completes stays visible as such.
+		st.PrimeRestarts++
+		e.Log.Errorf(mailbox, "prime restarted (%s); restart %d, priming since %s",
+			why, st.PrimeRestarts, st.PrimeStartedAt.UTC().Format(time.RFC3339))
+	} else {
+		st.Priming, st.PrimeStartedAt, st.PrimeRestarts = true, now, 0
+	}
+	st.StaleRound, st.StaleFound = false, 0
 	st.StuckLink, st.StuckSince, st.StuckCount = "", time.Time{}, 0
 	if st.CatchUp != nil || e.Opts.CatchUpMax < 0 {
 		return // a restarted prime keeps its original catch-up; or catch-up is off
@@ -250,8 +275,18 @@ func (e *Engine) startPrime(mailbox string, st *StateV2, anchor time.Time, why s
 func (e *Engine) syncDelta(ctx context.Context, mailbox string, st *StateV2, seen *cappedSet, deadline time.Time) error {
 	folder := e.Opts.Folder
 	reprimed := false
+	if now := e.now(); !st.Priming && !st.StaleRound && st.NextLink == "" && st.CatchUp == nil &&
+		e.Opts.CatchUpMax >= 0 && !st.LastSuccessAt.IsZero() && now.Sub(st.LastSuccessAt) > e.Opts.CatchUpMaxAge {
+		// The cursor is still valid, but nobody polled it for more than 48 h:
+		// same policy as a lost cursor. This round only marks ids seen; the
+		// catch-up then delivers the newest CatchUpMax of the last 24 h.
+		st.StaleRound, st.StaleFound = true, 0
+		st.CatchUp = &CatchUp{Anchor: now.Add(-e.Opts.CatchUpWindow), Exclude: append([]string(nil), st.Seen...)}
+		e.Log.Infof("%s: last success %s is older than %s; this round delivers at most the newest %d message(s) of the last %s, the rest is counted as dropped (too_old)",
+			mailbox, st.LastSuccessAt.UTC().Format(time.RFC3339), e.Opts.CatchUpMaxAge, e.Opts.CatchUpMax, e.Opts.CatchUpWindow)
+	}
 	var exclude *cappedSet
-	if st.CatchUp != nil {
+	if st.CatchUp != nil && !st.StaleRound {
 		exclude = newCappedSet(st.CatchUp.Exclude, 0)
 	}
 	for pages := 0; ; pages++ {
@@ -320,6 +355,13 @@ func (e *Engine) syncDelta(ctx context.Context, mailbox string, st *StateV2, see
 				seen.add(id)
 				continue
 			}
+			if st.StaleRound {
+				if !seen.has(id) {
+					st.StaleFound++
+				}
+				seen.add(id)
+				continue
+			}
 			if exclude != nil {
 				exclude.add(id) // queued here → the catch-up must not queue it again
 			}
@@ -335,7 +377,14 @@ func (e *Engine) syncDelta(ctx context.Context, mailbox string, st *StateV2, see
 		} else {
 			st.DeltaLink, st.NextLink = page.DeltaLink, ""
 			st.LastSuccessAt = now
-			if st.Priming {
+			if st.StaleRound {
+				st.StaleRound = false
+				st.LastRoundCompletedAt = now
+				if st.CatchUp != nil {
+					st.CatchUp.Found = st.StaleFound
+				}
+				st.StaleFound = 0
+			} else if st.Priming {
 				st.Priming, st.PrimedAt = false, now
 				// The 48 h rule is evaluated at completion too: a prime that
 				// stalled for days resumes "from now", so its floor moves to
@@ -345,7 +394,7 @@ func (e *Engine) syncDelta(ctx context.Context, mailbox string, st *StateV2, see
 					base = now
 				}
 				st.Floor = base.Add(-e.Opts.FloorMargin)
-				st.PrimeStartedAt = time.Time{}
+				st.PrimeStartedAt, st.PrimeRestarts = time.Time{}, 0
 				e.Log.Infof("%s: prime complete; watching from now", mailbox)
 			} else {
 				st.LastRoundCompletedAt = now
@@ -376,6 +425,7 @@ func (e *Engine) catchUp(ctx context.Context, mailbox string, st *StateV2, seen 
 		// (anchored at its own start) comes back "from now" as well.
 		e.Log.Infof("%s: catch-up anchor %s is older than %s at prime completion; resuming from now, no catch-up",
 			mailbox, cu.Anchor.UTC().Format(time.RFC3339), e.Opts.CatchUpMaxAge)
+		e.recordDrop(st, dropTooOld, cu.Found)
 		st.CatchUp = nil
 		return e.Store.Save(mailbox, e.Opts.Folder, st)
 	}
@@ -409,6 +459,10 @@ func (e *Engine) catchUp(ctx context.Context, mailbox string, st *StateV2, seen 
 			}
 			e.Log.Infof("%s: catch-up since %s: %d of %d recent message(s) queued (cap %d)",
 				mailbox, since.UTC().Format(time.RFC3339), queued, len(list.Value), e.Opts.CatchUpMax)
+			if skipped := cu.Found - queued; skipped > 0 {
+				e.Log.Infof("%s: %d message(s) of the stale round beyond the catch-up are not delivered (too_old)", mailbox, skipped)
+				e.recordDrop(st, dropTooOld, skipped)
+			}
 			st.CatchUp = nil
 			st.Seen = seen.slice()
 			return e.Store.Save(mailbox, e.Opts.Folder, st)
@@ -417,6 +471,7 @@ func (e *Engine) catchUp(ctx context.Context, mailbox string, st *StateV2, seen 
 	cu.Attempts++
 	if cu.Attempts >= catchUpMaxAttempts {
 		e.Log.Errorf(mailbox, "catch-up failed %d times, giving up (no catch-up delivered): %v", cu.Attempts, err)
+		e.recordDrop(st, dropTooOld, cu.Found)
 		st.CatchUp = nil
 	}
 	if serr := e.Store.Save(mailbox, e.Opts.Folder, st); serr != nil {
@@ -463,7 +518,7 @@ func (e *Engine) deliver(ctx context.Context, mailbox string, st *StateV2, deadl
 	st.Pending = keep
 
 	var errs []error
-	posts := 0
+	posts, badPoll := 0, 0
 	tooOld := now.Add(-e.Opts.CatchUpWindow)
 	remove := func(i int) { st.Pending = append(st.Pending[:i], st.Pending[i+1:]...) }
 	if now.Before(st.DeliverNotBefore) {
@@ -494,8 +549,22 @@ func (e *Engine) deliver(ctx context.Context, mailbox string, st *StateV2, deadl
 			if ra := retryAfter(err); ra > 0 {
 				e.backoff(mailbox, now.Add(ra))
 			}
-			if s := httpStatus(err); s == 429 || s >= 500 || s == 0 {
-				break // Graph busy or unreachable: don't hammer it with the rest
+			s := httpStatus(err)
+			if s == 429 || s >= 500 || s == 0 || s == 401 || s == 403 {
+				break // Graph busy, unreachable or refusing us: don't hammer it with the rest
+			}
+			if s == 400 {
+				badPoll++
+				p.BadRequests++
+				if p.BadRequests >= maxBadRequests {
+					e.Log.Errorf(mailbox, "dropping message #%s: its fetch answered 400 %d times", shortHash(p.ID), p.BadRequests)
+					e.recordDrop(st, dropFetch400, 1)
+					remove(i)
+					continue
+				}
+				if badPoll >= maxBadRequestsPoll {
+					break
+				}
 			}
 			i++
 			continue
@@ -612,6 +681,8 @@ const (
 	dropRejected   = "rejected"    // hook answered 4xx maxRejects times
 	dropPendingCap = "pending_cap" // pending list over PendingCap
 	dropFetch404   = "fetch_404"   // gone before delivery (moved/deleted)
+	dropFetch400   = "fetch_400"   // its fetch answered 400 maxBadRequests times
+	dropStateReset = "state_reset" // undelivered mail lost with a corrupt state file
 )
 
 // recordDrop updates the dropped-mail counters in st.

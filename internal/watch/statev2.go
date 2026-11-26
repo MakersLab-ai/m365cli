@@ -33,6 +33,9 @@ type PendingMsg struct {
 	// Rejected counts hook 4xx answers for this message (poison message);
 	// at maxRejects it is dropped with reason "rejected".
 	Rejected int `json:"rejected,omitempty"`
+	// BadRequests counts 400 answers to this message's fetch; at
+	// maxBadRequests it is dropped with reason "fetch_400".
+	BadRequests int `json:"bad_requests,omitempty"`
 }
 
 // CatchUp is a pending catch-up after a (re-)prime: once the prime has a
@@ -42,6 +45,9 @@ type CatchUp struct {
 	Anchor   time.Time `json:"anchor"`
 	Exclude  []string  `json:"exclude,omitempty"`
 	Attempts int       `json:"attempts,omitempty"`
+	// Found: ids a stale round skipped; what the catch-up does not queue of
+	// them is counted as dropped too_old.
+	Found int `json:"found,omitempty"`
 }
 
 // StateV2 is the per-(mailbox, folder) watch state. It is written atomically
@@ -57,6 +63,16 @@ type StateV2 struct {
 	// marked seen, nothing is delivered.
 	Priming        bool      `json:"priming,omitempty"`
 	PrimeStartedAt time.Time `json:"prime_started_at,omitzero"`
+	// PrimeRestarts counts restarts of the current prime (its own links lost);
+	// PrimeStartedAt keeps the original start across them. Reset when a prime
+	// completes.
+	PrimeRestarts int `json:"prime_restarts,omitempty"`
+	// StaleRound: a steady round that started more than CatchUpMaxAge after
+	// the last success. Its ids are only marked seen (counted in StaleFound);
+	// the catch-up then delivers the newest CatchUpMax of the last 24 h and
+	// the rest is counted as dropped too_old.
+	StaleRound bool `json:"stale_round,omitempty"`
+	StaleFound int  `json:"stale_found,omitempty"`
 	// Floor: mail received before it that shows up later as "created" (moved
 	// or restored into the folder) is not delivered as new.
 	Floor time.Time `json:"floor,omitzero"`
@@ -89,8 +105,9 @@ type StateV2 struct {
 	DeliverNotBefore time.Time `json:"deliver_not_before,omitzero"`
 
 	// Dropped mail (found but never delivered), for monitoring. DroppedTotal
-	// only grows; DroppedByReason keys: expired_24h, too_old, rejected,
-	// pending_cap, fetch_404. LastDroppedCount is the number dropped in the
+	// only grows (carried over when a corrupt state is reset); DroppedByReason
+	// keys: expired_24h, too_old, rejected, pending_cap, fetch_404, fetch_400,
+	// state_reset. LastDroppedCount is the number dropped in the
 	// poll at LastDroppedAt.
 	DroppedTotal     int            `json:"dropped_total,omitempty"`
 	LastDroppedAt    time.Time      `json:"last_dropped_at,omitzero"`

@@ -42,6 +42,17 @@ func newMailWatchPollCmd() *cobra.Command {
 			if eo.MaxPostsPoll < 1 {
 				return fmt.Errorf("--max-posts-per-poll must be >= 1, got %d", eo.MaxPostsPoll)
 			}
+			for name, d := range map[string]time.Duration{
+				"--catchup-window": eo.CatchUpWindow, "--catchup-max-age": eo.CatchUpMaxAge,
+				"--pending-max-age": eo.PendingMaxAge, "--poll-deadline": eo.PollDeadline,
+			} {
+				if d < 0 {
+					return fmt.Errorf("%s must not be negative, got %s", name, d)
+				}
+			}
+			if eo.MaxPagesPoll < 0 {
+				return fmt.Errorf("--max-pages-per-poll must not be negative, got %d", eo.MaxPagesPoll)
+			}
 			cfg, err := loadConfig()
 			if err != nil {
 				return err

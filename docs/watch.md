@@ -28,6 +28,9 @@ Tuning flags (Graph engine, defaults shown):
 | `--max-pages-per-poll` | `500` | Delta pages per mailbox per poll (200 ids each). A larger prime continues on the next poll. |
 | `--poll-deadline` | `3m` | Soft time budget per mailbox per poll for delta paging and delivery, checked between requests. A single in-flight request can overrun it by up to its own timeout (Graph and hook: 30 s), so one mailbox can hold the loop for roughly deadline + 30 s at most. |
 
+Negative durations, a negative `--catchup-max` / `--max-pages-per-poll` and a
+`--max-posts-per-poll` below 1 are rejected at startup.
+
 `--include-changed` / `--include-deleted` still work but switch to the v1
 engine (see "Engines").
 
@@ -123,9 +126,14 @@ that model:
    oldest first: `GET messages/{id}?$select=<production fields>` (body only
    with `--include-body`), then one POST with that one message. A `404`
    (moved or deleted meanwhile) is skipped, logged and counted as
-   `fetch_404`. A failed fetch (`429`, `5xx`, timeout or connection error)
-   backs off that message and stops this poll's deliveries; the rest stays
-   pending. A `Retry-After` on the fetch backs off the whole mailbox.
+   `fetch_404`.
+   - A fetch that fails with `429`, `5xx`, `401`/`403`, a timeout or a
+     connection error backs off that message and stops this poll's
+     deliveries; the rest stays pending.
+   - A `400` skips only that message. After 3 `400`s it is dropped as
+     `fetch_400`, and 5 `400`s in one poll end that poll.
+   - A `Retry-After` on the fetch backs off the whole mailbox.
+   - Long error bodies are truncated in the log.
 4. **Delivery never holds the cursor.** If the hook fails, the cursor has
    already advanced.
    - **Hook `5xx` or connection error** (gateway down): delivery stops for
@@ -167,7 +175,11 @@ that model:
     short `404` burst therefore keeps a healthy cursor. A deleted mailbox
     re-primes at most once (the fresh prime has no stored link to count). The
     log line is `stored delta link has answered HTTP <status> for <duration>`.
-  A re-prime is attempted at most once per poll.
+  A re-prime is attempted at most once per poll. If the prime's own links keep
+  dying, the prime restarts but keeps its original `prime_started_at`, and
+  `prime_restarts` counts the restarts (each one logged). A prime that never
+  completes therefore stays visible as a long `priming` instead of looking
+  freshly started.
 - **Catch-up after every prime.** Once the prime has its deltaLink, one list
   query fetches mail received since the **anchor**:
   `receivedDateTime ge max(anchor, now - 24h)`, newest first, at most 10
@@ -184,6 +196,14 @@ that model:
 - **48 h rule.** If the anchor is older than 48 h (`--catchup-max-age`), the
   catch-up is anchored at the prime start instead. A mailbox that was dead for
   days comes back "from now" and doesn't flood the agent with old mail.
+- **48 h rule with a still-valid cursor.** If a steady round starts more than
+  48 h after `last_success_at` (the watcher was stopped, the cursor survived),
+  the same policy applies:
+  - the round only marks its ids seen (`stale_round`, `stale_found`);
+  - a catch-up then delivers the newest 10 of the last 24 h;
+  - the rest is counted as dropped `too_old` and logged.
+
+  The agent gets at most 10 turns instead of hundreds.
 - **48 h rule at prime completion.** The rule is checked again when the prime
   completes. If the catch-up anchor (or the prime start) is then older than
   48 h, the prime stalled for days, e.g. the watcher was down mid-prime. In
@@ -203,10 +223,11 @@ that model:
 | --- | --- |
 | `version` | `2` |
 | `delta_link` / `next_link` | Cursor of the last completed round / resume point of the round in progress |
-| `priming`, `prime_started_at`, `floor` | Prime in progress; floor for moved-in old mail |
+| `priming`, `prime_started_at`, `prime_restarts`, `floor` | Prime in progress (original start, restarts of its own links); floor for moved-in old mail |
+| `stale_round`, `stale_found` | Round after > 48 h without success: ids only marked seen; catch-up delivers the newest 10 |
 | `seen` | Recent ids, append order; the newest 2000 are kept |
-| `pending` | Found but not yet delivered: id, `found_at`, attempts, per-message fetch backoff |
-| `catch_up` | Scheduled catch-up: anchor and the ids known before the prime |
+| `pending` | Found but not yet delivered: id, `found_at`, attempts, per-message fetch backoff, `rejected` (hook 4xx), `bad_requests` (fetch 400) |
+| `catch_up` | Scheduled catch-up: anchor, the ids known before the prime, `found` (stale-round ids) |
 | `last_success_at`, `last_round_completed_at`, `primed_at` | In-sync time, last steady round, last prime |
 | `error_class`, `error_count`, `last_error_at` | `sync_state_lost` / `throttled` / `auth` / `transient` / `other`; reset on success |
 | `stuck_link`, `stuck_since`, `stuck_count` | Backstop: stored link (hash) answering non-transient 4xx since when, how many polls |
@@ -227,7 +248,7 @@ failed polls (error counters, backoff). Read the JSON instead:
 | --- | --- | --- |
 | `last_success_at` | a few minutes old at most | **older than 15 min**. That is longer than a `Retry-After` backoff (≤ 10 min) and a sliced prime (one slice ≤ 3 min per poll). |
 | `error_class`, `error_count` | empty / 0 | `error_count` keeps growing; `auth` points at permissions |
-| `priming` | `false` | `true` for longer than a few polls (stuck prime) |
+| `priming` | `false` | `true` for longer than ~30 min, measured from `prime_started_at` (stuck prime); `prime_restarts` > 0 means its links keep dying |
 | `len(pending)` | 0 | > 0 for long |
 | oldest `pending[].found_at` | — | older than a few minutes (hook down); the message is dropped at 24 h |
 | `dropped_total` / `last_dropped_at` | unchanged | grows: mail was found but never delivered |
@@ -242,7 +263,11 @@ counted:
 "dropped_by_reason": {"expired_24h": 3, "too_old": 2, "rejected": 1, "fetch_404": 1}
 ```
 
-- `dropped_total` only grows.
+- `dropped_total` only grows. When a corrupt state file is reset, the
+  counters are carried over if the file still parses. Its undelivered mail is
+  counted as `state_reset`: the number of pending messages, or 1 if the file
+  was unreadable and the number is unknown. If the file is unreadable, the
+  earlier counters are lost.
 - `last_dropped_count` is the number dropped in the poll at `last_dropped_at`.
 - The keys are omitted while they are zero or empty (a fresh state has none),
   and `dropped_by_reason` lists only the reasons that occurred.
@@ -252,8 +277,16 @@ counted:
 | `expired_24h` | pending longer than `--pending-max-age` (hook down for a day) | yes |
 | `rejected` | the hook answered 4xx five times for this message | yes |
 | `pending_cap` | more than 500 undelivered; oldest dropped | yes |
-| `too_old` | received before `now - 24h` or before the floor (long stop, stalled prime, moved-in old mail) | informational, by design |
+| `fetch_400` | the message fetch answered 400 three times | yes |
+| `state_reset` | undelivered mail lost when a corrupt state file was reset (1 if unknown) | yes |
+| `too_old` | received before `now - 24h` or before the floor (long stop, stalled prime, moved-in old mail); a stale round's mail beyond the catch-up cap, or all of it if that catch-up gives up | informational, by design |
 | `fetch_404` | moved or deleted before it could be delivered | informational |
+
+**Not counted:** after a *lost* cursor, the IDs-only prime cannot tell new
+mail from old, so mail beyond the catch-up cap (or after a catch-up that gave
+up) is invisible to the watcher and not counted. Only the `delta sync state
+lost` log line shows it. A stale round on a still-valid cursor does count it
+(`too_old`).
 
 The v1 file (`*.json` without `.v2`) is no longer written after the upgrade.
 A monitor must read the `.v2.json` file when it exists.

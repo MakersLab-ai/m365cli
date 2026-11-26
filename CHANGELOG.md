@@ -27,7 +27,15 @@ cursor when the hook fails. See [docs/watch.md](docs/watch.md).
   cursor after a long stop does not replay days of mail); the 48 h rule is
   also applied when a stalled prime completes.
 - **Dropped-mail counters** in the state file: `dropped_total`,
-  `last_dropped_at`, `last_dropped_count`, `dropped_by_reason`.
+  `last_dropped_at`, `last_dropped_count`, `dropped_by_reason` (`expired_24h`,
+  `too_old`, `rejected`, `pending_cap`, `fetch_404`, `fetch_400`,
+  `state_reset`). A corrupt state reset carries the counters over.
+- A prime whose own links keep dying keeps its original `prime_started_at`;
+  `prime_restarts` counts the restarts.
+- A still-valid cursor unpolled for > 48 h is handled like a lost one: the
+  newest 10 of the last 24 h are delivered, the rest counted as `too_old`.
+- Message fetch `401`/`403` end the poll; a `400` skips that message (dropped
+  as `fetch_400` after 3). Negative duration flags are rejected.
 - Message fetch `5xx`/timeouts stop the poll's deliveries; the poll deadline
   bounds delivery even when nothing is posted.
 - **Self-healing on token loss.** Any 410, or a 4xx with

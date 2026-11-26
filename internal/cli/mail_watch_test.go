@@ -75,6 +75,11 @@ func TestWatchPollRejectsBadFlagsBeforeDoingAnything(t *testing.T) {
 		{"--max-posts-per-poll", "-1"},
 		{"--max-posts-per-poll", "0"},
 		{"--catchup-max", "-2"},
+		{"--catchup-window", "-1h"},
+		{"--catchup-max-age", "-1h"},
+		{"--pending-max-age", "-1h"},
+		{"--poll-deadline", "-1s"},
+		{"--max-pages-per-poll", "-1"},
 	} {
 		root := NewRootCmd()
 		root.SetArgs(append([]string{"--config", "/nonexistent/config.toml", "mail", "watch", "poll", "--hook-url", "http://127.0.0.1:1/h"}, args...))
