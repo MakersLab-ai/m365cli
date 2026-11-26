@@ -37,8 +37,8 @@ func (c *HookClient) Post(ctx context.Context, payload []byte) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("hook POST %s: %s: %s", c.url, resp.Status, string(body))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
+		return fmt.Errorf("hook POST %s: %s: %s", Redact(c.url), resp.Status, string(body))
 	}
 	return nil
 }

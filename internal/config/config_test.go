@@ -220,3 +220,53 @@ func TestIsSiteAllowedFailsClosedOnEmpty(t *testing.T) {
 		t.Error("empty allowed_sites must fail closed")
 	}
 }
+
+func TestWatchScopeDefaultsToAllConcreteAllowedMailboxes(t *testing.T) {
+	cfg := &Config{AllowedMailboxes: []string{"a@x.com", "*@y.com", "b@x.com"}}
+	got, globs, err := cfg.WatchScope()
+	if err != nil {
+		t.Fatalf("WatchScope: %v", err)
+	}
+	if len(got) != 2 || got[0] != "a@x.com" || got[1] != "b@x.com" {
+		t.Errorf("default scope = %v, want [a@x.com b@x.com]", got)
+	}
+	if len(globs) != 1 || globs[0] != "*@y.com" {
+		t.Errorf("skipped globs = %v", globs)
+	}
+}
+
+func TestWatchScopeHonoursWatchMailboxesSubset(t *testing.T) {
+	cfg := &Config{AllowedMailboxes: []string{"a@x.com", "b@x.com"}, WatchMailboxes: []string{"B@x.com"}}
+	got, _, err := cfg.WatchScope()
+	if err != nil {
+		t.Fatalf("WatchScope: %v", err)
+	}
+	if len(got) != 1 || got[0] != "B@x.com" {
+		t.Errorf("scope = %v, want only the watch_mailboxes entry", got)
+	}
+}
+
+func TestWatchScopeRejectsEntriesOutsideAllowlistOrGlobs(t *testing.T) {
+	for _, wm := range [][]string{{"c@x.com"}, {"*@x.com"}} {
+		cfg := &Config{AllowedMailboxes: []string{"a@x.com", "*@x.com"}, WatchMailboxes: wm}
+		if wm[0] == "c@x.com" {
+			cfg.AllowedMailboxes = []string{"a@x.com"}
+		}
+		if _, _, err := cfg.WatchScope(); err == nil {
+			t.Errorf("watch_mailboxes %v must be rejected", wm)
+		}
+	}
+}
+
+func TestLoadParsesWatchMailboxes(t *testing.T) {
+	cfg, err := Load(writeTemp(t, sampleTOML+`watch_mailboxes = ["agent@example.com"]`+"\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.WatchMailboxes) != 1 || cfg.WatchMailboxes[0] != "agent@example.com" {
+		t.Errorf("WatchMailboxes = %v", cfg.WatchMailboxes)
+	}
+	if err := (&Config{TenantID: "t", ClientID: "c", CertPath: "p", AllowedMailboxes: []string{"a@x.com"}, WatchMailboxes: []string{"zzz@x.com"}}).Validate(); err != nil {
+		t.Errorf("a watch_mailboxes typo must not fail Validate (it would break every command): %v", err)
+	}
+}

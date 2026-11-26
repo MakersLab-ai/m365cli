@@ -2,10 +2,13 @@ package graph
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/MakersLab-ai/m365cli/internal/config"
 )
@@ -330,5 +333,109 @@ func TestPatchForSiteEnforcesAllowlist(t *testing.T) {
 	}
 	if gotMethod != http.MethodPatch {
 		t.Errorf("method = %q, want PATCH", gotMethod)
+	}
+}
+
+func TestAPIErrorIsTypedAndDetectsSyncStateNotFound(t *testing.T) {
+	cfg := &config.Config{AllowedMailboxes: []string{"agent@example.com"}}
+	for _, tc := range []struct {
+		status int
+		code   string
+		lost   bool
+	}{
+		{410, "SyncStateNotFound", true},
+		{400, "syncStateNotFound", true},
+		{410, "resyncRequired", false},
+		{500, "SyncStateNotFound", false}, // only 4xx counts
+		{404, "ErrorItemNotFound", false},
+	} {
+		c := newTestClient(t, cfg, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(tc.status)
+			_, _ = w.Write([]byte(`{"error":{"code":"` + tc.code + `","message":"m"}}`))
+		})
+		_, err := c.MailboxDelta(context.Background(), "agent@example.com", "mailFolders/inbox/messages/delta?$deltatoken=SECRETTOKEN")
+		var ae *APIError
+		if !errors.As(err, &ae) || ae.Status != tc.status || ae.Code != tc.code {
+			t.Fatalf("%d %s: want typed APIError, got %#v", tc.status, tc.code, err)
+		}
+		if IsSyncStateNotFound(err) != tc.lost {
+			t.Errorf("%d %s: IsSyncStateNotFound = %v, want %v", tc.status, tc.code, !tc.lost, tc.lost)
+		}
+		if strings.Contains(err.Error(), "SECRETTOKEN") {
+			t.Errorf("error leaks the delta token: %v", err)
+		}
+	}
+}
+
+func TestAPIErrorParsesRetryAfterOn429And503(t *testing.T) {
+	cfg := &config.Config{AllowedMailboxes: []string{"agent@example.com"}}
+	c := newTestClient(t, cfg, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "17")
+		w.WriteHeader(429)
+		_, _ = w.Write([]byte(`{"error":{"code":"TooManyRequests","message":"slow down"}}`))
+	})
+	_, err := c.GetForMailbox(context.Background(), "agent@example.com", "messages")
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.RetryAfterDuration() != 17*time.Second {
+		t.Fatalf("Retry-After not parsed: %#v", err)
+	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
+	if d := ParseRetryAfter("30", now); d != 30*time.Second {
+		t.Errorf("seconds: %v", d)
+	}
+	if d := ParseRetryAfter(now.Add(90*time.Second).Format(http.TimeFormat), now); d != 90*time.Second {
+		t.Errorf("http-date: %v", d)
+	}
+	for _, v := range []string{"", "soon", "-5", now.Add(-time.Minute).Format(http.TimeFormat)} {
+		if d := ParseRetryAfter(v, now); d != 0 {
+			t.Errorf("ParseRetryAfter(%q) = %v, want 0", v, d)
+		}
+	}
+}
+
+func TestMailboxDeltaPageSendsPreferMaxPageSize(t *testing.T) {
+	cfg := &config.Config{AllowedMailboxes: []string{"agent@example.com"}}
+	var prefer []string
+	c := newTestClient(t, cfg, func(w http.ResponseWriter, r *http.Request) {
+		prefer = append(prefer, r.Header.Get("Prefer"))
+		_, _ = w.Write([]byte(`{"value":[]}`))
+	})
+	_, _ = c.MailboxDeltaPage(context.Background(), "agent@example.com", "mailFolders/inbox/messages/delta", 200)
+	_, _ = c.MailboxDelta(context.Background(), "agent@example.com", "mailFolders/inbox/messages/delta")
+	if prefer[0] != "odata.maxpagesize=200" || prefer[1] != "" {
+		t.Errorf("Prefer headers = %q", prefer)
+	}
+}
+
+func TestMailboxDeltaFollowsAbsoluteLinksOnTheBaseHost(t *testing.T) {
+	cfg := &config.Config{AllowedMailboxes: []string{"agent@example.com"}}
+	var gotQuery string
+	c := newTestClient(t, cfg, func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"value":[]}`))
+	})
+	link := c.BaseURL + "/users/agent@example.com/mailFolders/inbox/messages/delta?$skiptoken=7"
+	if _, err := c.MailboxDelta(context.Background(), "agent@example.com", link); err != nil {
+		t.Fatalf("absolute link on the base host: %v", err)
+	}
+	if gotQuery != "$skiptoken=7" {
+		t.Errorf("query = %q", gotQuery)
+	}
+	if _, err := c.MailboxDelta(context.Background(), "agent@example.com", "http://evil.example/users/agent@example.com/x"); err == nil {
+		t.Error("absolute link on a foreign host must be rejected")
+	}
+}
+
+func TestTransportErrorsDoNotLeakTheQueryString(t *testing.T) {
+	cfg := &config.Config{AllowedMailboxes: []string{"agent@example.com"}}
+	c := New(cfg, fakeToken{tok: "t"})
+	c.BaseURL = "http://127.0.0.1:1" // nothing listens
+	_, err := c.MailboxDelta(context.Background(), "agent@example.com",
+		"http://127.0.0.1:1/users/agent@example.com/mailFolders/inbox/messages/delta?$deltatoken=SECRETTOKEN")
+	if err == nil || strings.Contains(err.Error(), "SECRETTOKEN") {
+		t.Errorf("transport error must be redacted, got %v", err)
 	}
 }

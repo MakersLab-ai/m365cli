@@ -184,20 +184,49 @@ func (c *Client) PatchForSite(ctx context.Context, siteID, suffix string, payloa
 // allowlist and, for absolute URLs, that they target the Graph host and the same
 // mailbox — so a cursor can never be redirected off-tenant.
 func (c *Client) MailboxDelta(ctx context.Context, mailbox, urlOrSuffix string) ([]byte, error) {
+	return c.MailboxDeltaPage(ctx, mailbox, urlOrSuffix, 0)
+}
+
+// MailboxDeltaPage is MailboxDelta with a page-size hint: maxPageSize > 0 sends
+// "Prefer: odata.maxpagesize=<n>" (documented for message delta; Graph may
+// return fewer). The same allowlist and link checks apply.
+func (c *Client) MailboxDeltaPage(ctx context.Context, mailbox, urlOrSuffix string, maxPageSize int) ([]byte, error) {
 	if !c.cfg.IsMailboxAllowed(mailbox) {
 		return nil, fmt.Errorf("mailbox %q is not in allowed_mailboxes (out of scope)", mailbox)
 	}
-	if strings.HasPrefix(urlOrSuffix, "https://") {
-		if !strings.HasPrefix(urlOrSuffix, "https://graph.microsoft.com/") {
+	var hdr http.Header
+	if maxPageSize > 0 {
+		hdr = http.Header{"Prefer": []string{fmt.Sprintf("odata.maxpagesize=%d", maxPageSize)}}
+	}
+	if isAbsoluteURL(urlOrSuffix) {
+		if !c.isGraphHost(urlOrSuffix) {
 			return nil, fmt.Errorf("delta url is not on the Microsoft Graph host")
 		}
 		if !strings.Contains(urlOrSuffix, "/users/"+url.PathEscape(mailbox)+"/") &&
 			!strings.Contains(urlOrSuffix, "/users/"+mailbox+"/") {
 			return nil, fmt.Errorf("delta url does not belong to mailbox %q", mailbox)
 		}
-		return c.do(ctx, http.MethodGet, urlOrSuffix, nil)
+		return c.doRawHeaders(ctx, http.MethodGet, urlOrSuffix, "", nil, hdr)
 	}
-	return c.do(ctx, http.MethodGet, "/users/"+url.PathEscape(mailbox)+"/"+urlOrSuffix, nil)
+	return c.doRawHeaders(ctx, http.MethodGet, "/users/"+url.PathEscape(mailbox)+"/"+urlOrSuffix, "", nil, hdr)
+}
+
+func isAbsoluteURL(s string) bool {
+	return strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "http://")
+}
+
+// isGraphHost accepts https://graph.microsoft.com/... and, for tests against an
+// httptest server, links on BaseURL's own scheme+host.
+func (c *Client) isGraphHost(raw string) bool {
+	if strings.HasPrefix(raw, "https://graph.microsoft.com/") {
+		return true
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	base, err := url.Parse(c.BaseURL)
+	return err == nil && base.Host == u.Host && base.Scheme == u.Scheme
 }
 
 // mailboxPath enforces the allowlist and builds the scoped Graph path. This is
@@ -225,8 +254,14 @@ func (c *Client) do(ctx context.Context, method, path string, payload []byte) ([
 }
 
 // doRaw issues an authenticated request with an explicit body content type and
-// returns the body for 2xx responses, or an error carrying the status.
+// returns the body for 2xx responses, or an *APIError carrying the status.
 func (c *Client) doRaw(ctx context.Context, method, path, contentType string, payload []byte) ([]byte, error) {
+	return c.doRawHeaders(ctx, method, path, contentType, payload, nil)
+}
+
+// doRawHeaders is doRaw with extra request headers. Errors never carry the
+// request's query string (see RedactURL): delta links hold sync tokens.
+func (c *Client) doRawHeaders(ctx context.Context, method, path, contentType string, payload []byte, hdr http.Header) ([]byte, error) {
 	token, err := c.tokens.Token(ctx)
 	if err != nil {
 		return nil, err
@@ -236,12 +271,17 @@ func (c *Client) doRaw(ctx context.Context, method, path, contentType string, pa
 		bodyReader = bytes.NewReader(payload)
 	}
 	target := path
-	if !strings.HasPrefix(path, "https://") {
+	if !isAbsoluteURL(path) {
 		target = c.BaseURL + path
 	}
 	req, err := http.NewRequestWithContext(ctx, method, target, bodyReader)
 	if err != nil {
-		return nil, err
+		return nil, redactTransportError(err)
+	}
+	for k, vs := range hdr {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
@@ -251,16 +291,16 @@ func (c *Client) doRaw(ctx context.Context, method, path, contentType string, pa
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, redactTransportError(err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, redactTransportError(err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("graph %s: %s: %s", path, resp.Status, string(respBody))
+		return nil, newAPIError(method, path, resp, respBody, time.Now())
 	}
 	return respBody, nil
 }
