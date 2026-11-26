@@ -64,7 +64,9 @@ m365 --config config.toml mail watch poll --hook-url http://127.0.0.1:18789/hook
 ```
 
 `mail watch poll` uses EWS SyncFolderItems; the opaque SyncState is the cursor,
-persisted per mailbox under the config directory exactly like the cloud delta.
+persisted per mailbox under the config directory. EWS still uses the v1 watch
+engine (state file `<mailbox>__<folder>.json`); the v2 engine described in
+[watch.md](watch.md) is Graph-only for now.
 
 A `401` error means the service account credentials or impersonation rights are
 wrong; an EWS `ResponseCode` (e.g. `ErrorImpersonateUserDenied`) points at the

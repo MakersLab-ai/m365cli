@@ -40,6 +40,11 @@ type Config struct {
 	// send to any recipient is allowed regardless of send_allow. This turns off
 	// the draft-review safety net — doctor flags it as a warning.
 	SendUnrestricted bool `toml:"send_unrestricted"`
+	// WatchMailboxes narrows `mail watch poll --all` to a subset of
+	// allowed_mailboxes (e.g. read access to two mailboxes, but only one
+	// watched). Empty = every concrete allowed_mailboxes entry (the default).
+	// Each entry must be a concrete address that allowed_mailboxes permits.
+	WatchMailboxes []string `toml:"watch_mailboxes"`
 }
 
 // Load reads and parses the TOML config at path.
@@ -86,6 +91,57 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("config: default_mailbox %q is not in allowed_mailboxes", c.DefaultMailbox)
 	}
 	return nil
+}
+
+// WatchScope returns the mailboxes `mail watch poll --all` watches: the
+// watch_mailboxes subset when set, otherwise every concrete (non-glob)
+// allowed_mailboxes entry; skipped globs are returned for the caller to report.
+// It is checked here rather than in Validate so a watch_mailboxes typo stops
+// only the watcher, not every mail/calendar command.
+func (c *Config) WatchScope() (mailboxes, skippedGlobs []string, err error) {
+	seen := map[string]bool{}
+	add := func(m string) {
+		if k := normalize(m); !seen[k] {
+			seen[k] = true
+			mailboxes = append(mailboxes, m)
+		}
+	}
+	if len(c.WatchMailboxes) > 0 {
+		for _, m := range c.WatchMailboxes {
+			if strings.Contains(m, "*") {
+				return nil, nil, fmt.Errorf("config: watch_mailboxes entry %q must be a concrete address, not a glob", m)
+			}
+			if !c.IsMailboxAllowed(m) {
+				return nil, nil, fmt.Errorf("config: watch_mailboxes entry %q is not in allowed_mailboxes", m)
+			}
+			add(c.canonicalMailbox(m))
+		}
+		return mailboxes, nil, nil
+	}
+	for _, m := range c.AllowedMailboxes {
+		if strings.Contains(m, "*") {
+			skippedGlobs = append(skippedGlobs, m)
+			continue
+		}
+		add(strings.TrimSpace(m))
+	}
+	if len(mailboxes) == 0 {
+		return nil, skippedGlobs, fmt.Errorf("no concrete mailboxes in allowed_mailboxes")
+	}
+	return mailboxes, skippedGlobs, nil
+}
+
+// canonicalMailbox returns the allowed_mailboxes spelling of m when a concrete
+// entry matches it case-insensitively, so the watch state file name is the one
+// `--all` (and v0.2.x) always used; otherwise (matched via a glob) the
+// lower-cased address.
+func (c *Config) canonicalMailbox(m string) string {
+	for _, a := range c.AllowedMailboxes {
+		if !strings.Contains(a, "*") && normalize(a) == normalize(m) {
+			return strings.TrimSpace(a)
+		}
+	}
+	return normalize(m)
 }
 
 // IsMailboxAllowed reports whether addr matches allowed_mailboxes (exact or

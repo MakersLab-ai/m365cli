@@ -172,8 +172,10 @@ to match what you wrote.
 
 `m365 mail watch poll` delta-polls one or more mailboxes and forwards new mail
 to a webhook (gog-compatible payload) — no public inbound endpoint required.
-See **[docs/watch.md](docs/watch.md)** for usage, payload, and the reliability
-contract.
+It survives hook outages and lost delta tokens on its own (cursor saved per
+page, automatic IDs-only re-prime). `watch_mailboxes` in `config.toml` narrows
+`--all` to a subset of `allowed_mailboxes`. See **[docs/watch.md](docs/watch.md)**
+for usage, payload, and the reliability contract.
 
 ## Output
 
