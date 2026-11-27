@@ -17,7 +17,7 @@ import (
 func newMailReplyCmd() *cobra.Command {
 	var mailbox, bodyFile string
 	var replyAll, asHTML, asDraft bool
-	var inlineImages, attachPaths []string
+	var bcc, inlineImages, attachPaths []string
 	cmd := &cobra.Command{
 		Use:   "reply <message-id> --body-file <f>",
 		Short: "Reply to a message — with --draft it only prepares a reply-draft and never sends",
@@ -47,7 +47,7 @@ func newMailReplyCmd() *cobra.Command {
 			// of its own — not an accident of the guardrail. Asking for it must
 			// not depend on who the recipients happen to be.
 			if asDraft {
-				return createReplyDraft(cmd.Context(), client, mbx, id, body, replyAll, nil, images, atts)
+				return createReplyDraft(cmd.Context(), client, mbx, id, body, replyAll, bcc, nil, images, atts)
 			}
 
 			// Determine who the reply would reach, then apply the send guardrail.
@@ -55,35 +55,36 @@ func newMailReplyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-
-			if plan := mail.PlanSend(cfg, recipients); plan.Action == mail.DraftOnly {
+			// A BCC on the reply reaches its address too — guard it like the rest.
+			if plan := mail.PlanSend(cfg, mail.WithBcc(recipients, bcc)); plan.Action == mail.DraftOnly {
 				fmt.Fprintf(os.Stderr, "send guardrail: %v not in send_allow — saving as reply-draft for review\n", plan.Blocked)
-				return createReplyDraft(cmd.Context(), client, mbx, id, body, replyAll, plan.Blocked, images, atts)
+				return createReplyDraft(cmd.Context(), client, mbx, id, body, replyAll, bcc, plan.Blocked, images, atts)
 			}
 
 			if len(images) > 0 || len(atts) > 0 {
 				// Attachments need a message to hang on: build the reply as a
 				// draft, attach, then send that draft.
-				draftID, err := client.Mail().CreateReplyDraft(cmd.Context(), mbx, id, body, replyAll)
+				draftID, err := client.Mail().CreateReplyDraft(cmd.Context(), mbx, id, body, replyAll, bcc)
 				if err != nil {
 					return err
 				}
 				if err := sendDraftWith(cmd.Context(), client, mbx, draftID, images, atts); err != nil {
 					return err
 				}
-				return output.WriteJSON(os.Stdout, map[string]any{"sent": true, "mailbox": mbx, "replyAll": replyAll, "to": recipients,
+				return output.WriteJSON(os.Stdout, map[string]any{"sent": true, "mailbox": mbx, "replyAll": replyAll, "to": recipients, "bcc": bcc,
 					"inlineImages": len(images), "attachments": len(atts)})
 			}
-			if err := client.Mail().Reply(cmd.Context(), mbx, id, body, replyAll); err != nil {
+			if err := client.Mail().Reply(cmd.Context(), mbx, id, body, replyAll, bcc); err != nil {
 				return err
 			}
-			return output.WriteJSON(os.Stdout, map[string]any{"sent": true, "mailbox": mbx, "replyAll": replyAll, "to": recipients})
+			return output.WriteJSON(os.Stdout, map[string]any{"sent": true, "mailbox": mbx, "replyAll": replyAll, "to": recipients, "bcc": bcc})
 		},
 	}
 	cmd.Flags().StringVar(&mailbox, "mailbox", "", "mailbox to operate on (defaults to default_mailbox)")
 	cmd.Flags().StringVar(&bodyFile, "body-file", "", "path to a file containing the reply body")
 	cmd.Flags().BoolVar(&replyAll, "reply-all", false, "reply to all original recipients")
 	cmd.Flags().BoolVar(&asHTML, "html", false, "the body file already contains HTML — use it verbatim instead of converting the plain text")
+	addBccFlag(cmd, &bcc)
 	cmd.Flags().BoolVar(&asDraft, "draft", false, "never send: prepare the reply as a draft (keeps the quoted thread and its inline images)")
 	cmd.Flags().StringArrayVar(&inlineImages, "inline-image", nil, "attach an inline image as cid=path, referenced from the body as <img src=\"cid:…\"> (repeatable)")
 	addAttachFlag(cmd, &attachPaths)
@@ -93,8 +94,8 @@ func newMailReplyCmd() *cobra.Command {
 // createReplyDraft creates a draft reply (createReply/createReplyAll) with its
 // body set, leaving it unsent for human review. blocked is empty when the draft
 // was asked for rather than forced by the guardrail.
-func createReplyDraft(ctx context.Context, client backend.Backend, mbx, id string, body mail.Body, replyAll bool, blocked []string, images []mail.InlineImage, atts []mail.FileAttachment) error {
-	draftID, err := client.Mail().CreateReplyDraft(ctx, mbx, id, body, replyAll)
+func createReplyDraft(ctx context.Context, client backend.Backend, mbx, id string, body mail.Body, replyAll bool, bcc, blocked []string, images []mail.InlineImage, atts []mail.FileAttachment) error {
+	draftID, err := client.Mail().CreateReplyDraft(ctx, mbx, id, body, replyAll, bcc)
 	if err != nil {
 		return err
 	}
@@ -106,7 +107,7 @@ func createReplyDraft(ctx context.Context, client backend.Backend, mbx, id strin
 	}
 	return output.WriteJSON(os.Stdout, map[string]any{
 		"sent": false, "draft": true, "draft_id": draftID, "mailbox": mbx,
-		"replyAll": replyAll, "blocked": blocked, "draftReason": draftReason(blocked),
+		"replyAll": replyAll, "bcc": bcc, "blocked": blocked, "draftReason": draftReason(blocked),
 		"inlineImages": len(images),
 		"attachments":  len(atts),
 	})

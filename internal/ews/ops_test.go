@@ -15,7 +15,7 @@ func TestReplyBuildsReplyToItem(t *testing.T) {
 	c, body := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, createSendSuccess)
 	})
-	if err := c.Reply(context.Background(), mbx, "REF-1", Body{Content: "thanks"}, false); err != nil {
+	if err := c.Reply(context.Background(), mbx, "REF-1", Body{Content: "thanks"}, false, nil); err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
 	want := `<m:Items><t:ReplyToItem><t:ReferenceItemId Id="REF-1"/><t:NewBodyContent BodyType="Text">thanks</t:NewBodyContent></t:ReplyToItem></m:Items>`
@@ -29,7 +29,7 @@ func TestReplyBuildsReplyToItem(t *testing.T) {
 
 func TestReplyAllUsesReplyAllToItem(t *testing.T) {
 	c, body := testClient(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, createSendSuccess) })
-	if err := c.Reply(context.Background(), mbx, "REF-2", Body{Content: "ok"}, true); err != nil {
+	if err := c.Reply(context.Background(), mbx, "REF-2", Body{Content: "ok"}, true, nil); err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
 	if !strings.Contains(*body, "<t:ReplyAllToItem>") {
@@ -39,7 +39,7 @@ func TestReplyAllUsesReplyAllToItem(t *testing.T) {
 
 func TestCreateReplyDraftReturnsID(t *testing.T) {
 	c, body := testClient(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, createDraftSuccess) })
-	id, err := c.CreateReplyDraft(context.Background(), mbx, "REF-3", Body{Content: "draft"}, false)
+	id, err := c.CreateReplyDraft(context.Background(), mbx, "REF-3", Body{Content: "draft"}, false, nil)
 	if err != nil {
 		t.Fatalf("CreateReplyDraft: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestReplyTypesHTMLBodiesAsHTML(t *testing.T) {
 	c, body := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, createSendSuccess)
 	})
-	if err := c.Reply(context.Background(), mbx, "REF-4", Body{Type: "HTML", Content: "<p>Hallo</p>"}, false); err != nil {
+	if err := c.Reply(context.Background(), mbx, "REF-4", Body{Type: "HTML", Content: "<p>Hallo</p>"}, false, nil); err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
 	want := `<t:NewBodyContent BodyType="HTML">&lt;p&gt;Hallo&lt;/p&gt;</t:NewBodyContent>`
@@ -289,7 +289,7 @@ func TestReplyKeepsPlainTextLineBreaks(t *testing.T) {
 	c, body := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, createSendSuccess)
 	})
-	if err := c.Reply(context.Background(), mbx, "REF-5", Body{Content: "eins\nzwei"}, false); err != nil {
+	if err := c.Reply(context.Background(), mbx, "REF-5", Body{Content: "eins\nzwei"}, false, nil); err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
 	// The newline survives as an XML character reference — it is preserved,
@@ -297,5 +297,18 @@ func TestReplyKeepsPlainTextLineBreaks(t *testing.T) {
 	want := `<t:NewBodyContent BodyType="Text">eins&#xA;zwei</t:NewBodyContent>`
 	if !strings.Contains(*body, want) {
 		t.Errorf("plain text must travel unconverted\ngot: %s", *body)
+	}
+}
+
+func TestReplyWritesBccBeforeReferenceItemId(t *testing.T) {
+	// ReplyToItem's schema puts BccRecipients before ReferenceItemId; out of
+	// order is ErrorSchemaValidation.
+	c, body := testClient(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, createSendSuccess) })
+	if err := c.Reply(context.Background(), mbx, "REF-3", Body{Content: "ok"}, false, []string{"b@y.com"}); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	want := `<t:ReplyToItem><t:BccRecipients><t:Mailbox><t:EmailAddress>b@y.com</t:EmailAddress></t:Mailbox></t:BccRecipients><t:ReferenceItemId Id="REF-3"/>`
+	if !strings.Contains(*body, want) {
+		t.Errorf("reply bcc wrong\ngot:  %s\nwant substring: %s", *body, want)
 	}
 }

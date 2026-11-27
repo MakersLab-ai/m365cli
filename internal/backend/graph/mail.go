@@ -64,8 +64,8 @@ func (m mailSvc) ReplyContext(ctx context.Context, mailbox, id string, replyAll 
 	return mail.ReplyRecipients(msgJSON, replyAll)
 }
 
-func (m mailSvc) Reply(ctx context.Context, mailbox, id string, body mail.Body, replyAll bool) error {
-	payload, err := mail.BuildReplyComment(body)
+func (m mailSvc) Reply(ctx context.Context, mailbox, id string, body mail.Body, replyAll bool, bcc []string) error {
+	payload, err := mail.BuildReplyComment(body, bcc)
 	if err != nil {
 		return err
 	}
@@ -77,7 +77,7 @@ func (m mailSvc) Reply(ctx context.Context, mailbox, id string, body mail.Body, 
 	return err
 }
 
-func (m mailSvc) CreateReplyDraft(ctx context.Context, mailbox, id string, body mail.Body, replyAll bool) (string, error) {
+func (m mailSvc) CreateReplyDraft(ctx context.Context, mailbox, id string, body mail.Body, replyAll bool, bcc []string) (string, error) {
 	create := "createReply"
 	if replyAll {
 		create = "createReplyAll"
@@ -103,7 +103,7 @@ func (m mailSvc) CreateReplyDraft(ctx context.Context, mailbox, id string, body 
 	if quoted == "" {
 		quoted = m.draftBody(ctx, mailbox, draft.ID)
 	}
-	patch, err := mail.BuildReplyBodyPatch(body, quoted)
+	patch, err := mail.BuildReplyBodyPatch(body, quoted, bcc)
 	if err != nil {
 		return "", err
 	}

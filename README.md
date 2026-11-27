@@ -28,7 +28,8 @@ m365 drive ls --json
   binary may touch is listed in config. Anything not listed is refused **before**
   any network call. An empty list denies everything.
 - **Send guardrail.** Mail to a recipient outside your `send_allow` list is never
-  sent silently — it becomes a **draft** for human review. You opt out
+  sent silently — it becomes a **draft** for human review. To, Cc and Bcc are
+  all checked. You opt out
   explicitly, and `doctor` warns when you do.
 - **Agent-friendly output.** `--json` emits a stable envelope on stdout; human
   hints and progress go to stderr, so pipelines stay parseable.
@@ -128,6 +129,11 @@ m365 mail send --mailbox agent@contoso.com \
 # A recipient outside send_allow → saved as a draft, not sent:
 m365 mail send --to stranger@example.com --subject Hi --body-file ./body.txt
 # stderr: send guardrail: [stranger@example.com] not in send_allow — saving as draft
+
+# Hidden copy: --bcc on send, draft and reply (repeatable or comma-separated).
+# BCC addresses pass the same send_allow check as --to/--cc:
+m365 mail send --to person@contoso.com --bcc boss@contoso.com \
+  --subject "Update" --body-file ./body.txt
 ```
 
 Bodies are plain text by default, and the formatting survives on every path:

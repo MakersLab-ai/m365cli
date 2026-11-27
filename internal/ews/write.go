@@ -13,6 +13,7 @@ type OutMessage struct {
 	Body    Body
 	To      []string
 	Cc      []string
+	Bcc     []string
 }
 
 // bodyType is the BodyType attribute for an outgoing body. EWS types every body
@@ -86,7 +87,7 @@ func createResult(env *envelope) (createResponseMessage, error) {
 }
 
 // createItemEnvelope builds a CreateItem request. The Message child order is
-// fixed by the EWS schema (Subject, Body, then recipients) — out-of-order
+// fixed by the EWS schema (Subject, Body, then To, Cc, Bcc) — out-of-order
 // children are rejected with ErrorSchemaValidation.
 func createItemEnvelope(mailbox string, m OutMessage, disposition, savedFolder string) []byte {
 	var b bytes.Buffer
@@ -99,6 +100,7 @@ func createItemEnvelope(mailbox string, m OutMessage, disposition, savedFolder s
 		disposition, savedFolder, esc(m.Subject), bodyType(m.Body), esc(m.Body.Content))
 	writeRecipients(&b, "ToRecipients", m.To)
 	writeRecipients(&b, "CcRecipients", m.Cc)
+	writeRecipients(&b, "BccRecipients", m.Bcc)
 	b.WriteString(`</t:Message></m:Items></m:CreateItem></soap:Body></soap:Envelope>`)
 	return b.Bytes()
 }

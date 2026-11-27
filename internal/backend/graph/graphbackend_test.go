@@ -378,7 +378,7 @@ func TestMailReplySendsHTMLComment(t *testing.T) {
 	var cap capture
 	be := newBackend(t, mailboxCfg(), &cap, http.StatusAccepted, ``)
 
-	err := be.Mail().Reply(context.Background(), mbx, "MSG-1", mail.Body{Content: "Hallo Sandra,\n\ndanke dir."}, false)
+	err := be.Mail().Reply(context.Background(), mbx, "MSG-1", mail.Body{Content: "Hallo Sandra,\n\ndanke dir."}, false, nil)
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -401,7 +401,7 @@ func TestMailCreateReplyDraftPatchesBodyAsHTML(t *testing.T) {
 	var cap capture
 	be := newBackend(t, mailboxCfg(), &cap, http.StatusCreated, `{"id":"DRAFT-9"}`)
 
-	id, err := be.Mail().CreateReplyDraft(context.Background(), mbx, "MSG-1", mail.Body{Content: "eins\nzwei"}, false)
+	id, err := be.Mail().CreateReplyDraft(context.Background(), mbx, "MSG-1", mail.Body{Content: "eins\nzwei"}, false, nil)
 	if err != nil {
 		t.Fatalf("CreateReplyDraft: %v", err)
 	}
@@ -435,7 +435,7 @@ func TestMailCreateReplyDraftKeepsQuotedOriginal(t *testing.T) {
 	created := `{"id":"DRAFT-9","body":{"contentType":"html","content":"<html><body><div>Von: Julian</div><img src=\"cid:image001.png\"></body></html>"}}`
 	be := newBackend(t, mailboxCfg(), &cap, http.StatusCreated, created)
 
-	if _, err := be.Mail().CreateReplyDraft(context.Background(), mbx, "MSG-1", mail.Body{Content: "Danke!"}, true); err != nil {
+	if _, err := be.Mail().CreateReplyDraft(context.Background(), mbx, "MSG-1", mail.Body{Content: "Danke!"}, true, nil); err != nil {
 		t.Fatalf("CreateReplyDraft: %v", err)
 	}
 	var patch struct {
@@ -459,7 +459,7 @@ func TestMailCreateReplyDraftUsesReplyAllEndpoint(t *testing.T) {
 	var uris []string
 	be := newBackendRecording(t, mailboxCfg(), &cap, http.StatusCreated, `{"id":"DRAFT-9","body":{"content":"<html><body>q</body></html>"}}`, &uris)
 
-	if _, err := be.Mail().CreateReplyDraft(context.Background(), mbx, "MSG-1", mail.Body{Content: "ok"}, true); err != nil {
+	if _, err := be.Mail().CreateReplyDraft(context.Background(), mbx, "MSG-1", mail.Body{Content: "ok"}, true, nil); err != nil {
 		t.Fatalf("CreateReplyDraft: %v", err)
 	}
 	if uris[0] != "/users/agent@example.com/messages/MSG-1/createReplyAll" {
@@ -608,5 +608,29 @@ func TestSitesMoveRejectsEmptyPaths(t *testing.T) {
 	}
 	if len(*calls) != 0 {
 		t.Errorf("empty paths must fail before I/O; calls = %d", len(*calls))
+	}
+}
+
+// --- BCC (GC ac4ceb28) ---
+
+func TestMailReplyCarriesBcc(t *testing.T) {
+	var cap capture
+	be := newBackend(t, mailboxCfg(), &cap, http.StatusAccepted, ``)
+	if err := be.Mail().Reply(context.Background(), mbx, "MSG-1", mail.Body{Content: "ok"}, false, []string{"boss@p.com"}); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(cap.body, `"bccRecipients":[{"emailAddress":{"address":"boss@p.com"}}]`) {
+		t.Errorf("reply payload lacks bcc: %s", cap.body)
+	}
+}
+
+func TestMailCreateReplyDraftPatchCarriesBcc(t *testing.T) {
+	var cap capture
+	be := newBackend(t, mailboxCfg(), &cap, http.StatusCreated, `{"id":"DRAFT-9","body":{"content":"<html><body>q</body></html>"}}`)
+	if _, err := be.Mail().CreateReplyDraft(context.Background(), mbx, "MSG-1", mail.Body{Content: "ok"}, false, []string{"boss@p.com"}); err != nil {
+		t.Fatalf("CreateReplyDraft: %v", err)
+	}
+	if cap.method != http.MethodPatch || !strings.Contains(cap.body, `"bccRecipients":[{"emailAddress":{"address":"boss@p.com"}}]`) {
+		t.Errorf("draft patch lacks bcc: %s %s", cap.method, cap.body)
 	}
 }

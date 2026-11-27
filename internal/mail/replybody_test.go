@@ -47,7 +47,7 @@ func TestSpliceIntoQuotedFragmentAndEmptyQuote(t *testing.T) {
 }
 
 func TestBuildReplyBodyPatchKeepsQuotedThread(t *testing.T) {
-	payload, err := BuildReplyBodyPatch(Body{Content: "eins\nzwei"}, `<html><body><div>Original</div></body></html>`)
+	payload, err := BuildReplyBodyPatch(Body{Content: "eins\nzwei"}, `<html><body><div>Original</div></body></html>`, nil)
 	if err != nil {
 		t.Fatalf("BuildReplyBodyPatch: %v", err)
 	}

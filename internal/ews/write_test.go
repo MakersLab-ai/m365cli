@@ -134,3 +134,34 @@ func TestSendMessageTypesHTMLBodiesAsHTML(t *testing.T) {
 		t.Errorf("request missing %q\nbody: %s", want, *body)
 	}
 }
+
+// --- BCC (GC ac4ceb28) ---
+
+func TestSendMessageWritesBccAfterCc(t *testing.T) {
+	c, body := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, createSendSuccess)
+	})
+	err := c.SendMessage(context.Background(), mbx, OutMessage{
+		Subject: "s", Body: Body{Content: "b"}, To: []string{"x@y.com"}, Cc: []string{"c@y.com"}, Bcc: []string{"b@y.com"},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	// schema-fixed order: To, Cc, Bcc
+	want := `</t:CcRecipients><t:BccRecipients><t:Mailbox><t:EmailAddress>b@y.com</t:EmailAddress></t:Mailbox></t:BccRecipients></t:Message>`
+	if !strings.Contains(*body, want) {
+		t.Errorf("request missing %q\nbody: %s", want, *body)
+	}
+}
+
+func TestSendMessageOmitsEmptyBcc(t *testing.T) {
+	c, body := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, createSendSuccess)
+	})
+	if err := c.SendMessage(context.Background(), mbx, OutMessage{Subject: "s", Body: Body{Content: "b"}, To: []string{"x@y.com"}}); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if strings.Contains(*body, "BccRecipients") {
+		t.Errorf("empty bcc should be omitted\nbody: %s", *body)
+	}
+}
