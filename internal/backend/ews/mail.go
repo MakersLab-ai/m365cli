@@ -45,7 +45,7 @@ func (m mailSvc) CreateDraft(ctx context.Context, mailbox string, msg mail.Messa
 
 // outMessage maps the neutral compose input onto the EWS transport's input.
 func outMessage(m mail.Message) ews.OutMessage {
-	return ews.OutMessage{Subject: m.Subject, Body: outBody(m.Body), To: m.To, Cc: m.Cc}
+	return ews.OutMessage{Subject: m.Subject, Body: outBody(m.Body), To: m.To, Cc: m.Cc, Bcc: m.Bcc}
 }
 
 // outBody maps an authored body onto an EWS body. Plain text stays plain text —
@@ -89,12 +89,12 @@ func (m mailSvc) ReplyContext(ctx context.Context, mailbox, id string, replyAll 
 	return out, nil
 }
 
-func (m mailSvc) Reply(ctx context.Context, mailbox, id string, body mail.Body, replyAll bool) error {
-	return m.c.Reply(ctx, mailbox, id, outBody(body), replyAll)
+func (m mailSvc) Reply(ctx context.Context, mailbox, id string, body mail.Body, replyAll bool, bcc []string) error {
+	return m.c.Reply(ctx, mailbox, id, outBody(body), replyAll, bcc)
 }
 
-func (m mailSvc) CreateReplyDraft(ctx context.Context, mailbox, id string, body mail.Body, replyAll bool) (string, error) {
-	return m.c.CreateReplyDraft(ctx, mailbox, id, outBody(body), replyAll)
+func (m mailSvc) CreateReplyDraft(ctx context.Context, mailbox, id string, body mail.Body, replyAll bool, bcc []string) (string, error) {
+	return m.c.CreateReplyDraft(ctx, mailbox, id, outBody(body), replyAll, bcc)
 }
 
 // AddInlineImage is Graph-only for now: EWS attaches inline content through

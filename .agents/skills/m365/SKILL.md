@@ -46,6 +46,12 @@ stderr — read stdout for results.
   `send_allow` does **not** send — it creates a **draft** for human review. Don't
   try to force a direct send; if the user truly wants unrestricted send, that is
   an operator config change (`send_unrestricted`), not something you set per call.
+  **Never send mail any other way** (your own script, a direct Graph/EWS call):
+  that skips the guardrail. If `m365` lacks something you need, say so.
+- **`--bcc` only when the user asked for it.** BCC recipients are invisible to
+  everyone else on the mail, so a wrong one goes unnoticed. They pass the same
+  `send_allow` check as `--to`/`--cc`: one BCC outside it turns the send into a
+  draft.
 - Compose bodies with **`--body-file`**, never an inline body flag (avoids shell
   escaping and accidental content corruption).
 - **Write the body as plain text with normal blank lines.** The CLI keeps that
@@ -109,6 +115,11 @@ m365 mail send --mailbox agent@contoso.com \
   --to person@contoso.com --subject "Update" --body-file ./body.txt --json
 
 m365 mail draft --to person@contoso.com --subject "WIP" --body-file ./body.txt --json
+
+# Hidden copy (only when the user asked for one) — send, draft and reply:
+m365 mail send --to kunde@extern.at --bcc chef@contoso.com \
+  --subject "Angebot" --body-file ./body.txt --json
+m365 mail reply <message-id> --bcc chef@contoso.com --body-file ./reply.txt --json
 m365 mail reply <message-id> --body-file ./reply.txt --json
 m365 mail reply <message-id> --reply-all --body-file ./reply.txt --json
 
@@ -156,8 +167,8 @@ shared to the app via `allowed_sites` (incl. someone else's OneDrive) is only
 reachable with `m365 sp …` — use `sp items/download/upload/move` there.
 
 The send guardrail also applies to `reply`/`reply-all`: recipients are read from
-the original message, and if any is outside `send_allow` the result is a
-reply-draft, not a sent reply. The JSON envelope reports `sent`/`draft` and any
+the original message (plus any `--bcc`), and if any is outside `send_allow` the
+result is a reply-draft, not a sent reply. The JSON envelope reports `sent`/`draft` and any
 `blocked` recipients.
 
 **Reply-draft as an intent, not an accident:** `--draft` always produces the

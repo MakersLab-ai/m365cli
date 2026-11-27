@@ -72,8 +72,8 @@ type MailService interface {
 	// Reply and CreateReplyDraft take the body as authored (mail.Body carries
 	// text-vs-HTML), not pre-rendered: the right rendering is transport-specific
 	// — Graph's reply path is HTML-only, EWS types its bodies explicitly.
-	Reply(ctx context.Context, mailbox, id string, body mail.Body, replyAll bool) error
-	CreateReplyDraft(ctx context.Context, mailbox, id string, body mail.Body, replyAll bool) (draftID string, err error)
+	Reply(ctx context.Context, mailbox, id string, body mail.Body, replyAll bool, bcc []string) error
+	CreateReplyDraft(ctx context.Context, mailbox, id string, body mail.Body, replyAll bool, bcc []string) (draftID string, err error)
 
 	// AddInlineImage attaches an image to an existing draft and marks it
 	// inline, so the body can reference it as <img src="cid:…">. It is what

@@ -57,6 +57,23 @@ type Message struct {
 	Body    Body
 	To      []string
 	Cc      []string
+	// Bcc recipients are invisible to everyone else on the message, so a
+	// wrong one goes unnoticed — they pass the send guardrail like To/Cc.
+	Bcc []string
+}
+
+// AllRecipients is every address the message reaches (To, Cc, Bcc) — the
+// input to PlanSend. Feed the guardrail from here, never from To/Cc alone.
+func (m Message) AllRecipients() []string {
+	return WithBcc(append(append([]string{}, m.To...), m.Cc...), m.Bcc)
+}
+
+// WithBcc returns the visible recipients plus the BCC ones, as a new slice —
+// what a send or reply actually reaches, and so what PlanSend must see.
+func WithBcc(visible, bcc []string) []string {
+	out := make([]string, 0, len(visible)+len(bcc))
+	out = append(out, visible...)
+	return append(out, bcc...)
 }
 
 type emailAddress struct {
@@ -73,8 +90,9 @@ type graphMessage struct {
 		ContentType string `json:"contentType"`
 		Content     string `json:"content"`
 	} `json:"body"`
-	ToRecipients []recipient `json:"toRecipients"`
-	CcRecipients []recipient `json:"ccRecipients,omitempty"`
+	ToRecipients  []recipient `json:"toRecipients"`
+	CcRecipients  []recipient `json:"ccRecipients,omitempty"`
+	BccRecipients []recipient `json:"bccRecipients,omitempty"`
 }
 
 func recipients(addrs []string) []recipient {
@@ -90,9 +108,10 @@ func toGraph(m Message) (graphMessage, error) {
 		return graphMessage{}, fmt.Errorf("message has no recipients")
 	}
 	gm := graphMessage{
-		Subject:      m.Subject,
-		ToRecipients: recipients(m.To),
-		CcRecipients: recipients(m.Cc),
+		Subject:       m.Subject,
+		ToRecipients:  recipients(m.To),
+		CcRecipients:  recipients(m.Cc),
+		BccRecipients: recipients(m.Bcc),
 	}
 	gm.Body.ContentType = "Text"
 	if m.Body.IsHTML() {
@@ -165,10 +184,15 @@ func ReplyRecipients(messageJSON []byte, replyAll bool) ([]string, error) {
 // BuildReplyComment renders the {comment} payload for reply / replyAll. Graph
 // splices the comment into the HTML body of the reply, so a plain-text body is
 // converted first — otherwise every line break is lost on the way out.
-func BuildReplyComment(body Body) ([]byte, error) {
-	return json.Marshal(struct {
-		Comment string `json:"comment"`
-	}{Comment: body.AsHTML()})
+//
+// bcc rides along as message.bccRecipients. Graph answers 400 when comment and
+// message.body are both set, so the message carries the recipients only.
+func BuildReplyComment(body Body, bcc []string) ([]byte, error) {
+	payload := map[string]any{"comment": body.AsHTML()}
+	if len(bcc) > 0 {
+		payload["message"] = map[string]any{"bccRecipients": recipients(bcc)}
+	}
+	return json.Marshal(payload)
 }
 
 // BuildReplyBodyPatch renders the PATCH payload that fills a reply draft
@@ -178,13 +202,19 @@ func BuildReplyComment(body Body) ([]byte, error) {
 // quoted is the body the draft already has. The reply is spliced in above it
 // instead of replacing it — that quote IS the thread, including its inline
 // images. Pass "" only when there is demonstrably nothing to keep.
-func BuildReplyBodyPatch(body Body, quoted string) ([]byte, error) {
-	return json.Marshal(map[string]any{
+//
+// bcc, when given, is set on the draft in the same PATCH.
+func BuildReplyBodyPatch(body Body, quoted string, bcc []string) ([]byte, error) {
+	patch := map[string]any{
 		"body": map[string]string{
 			"contentType": "HTML",
 			"content":     SpliceIntoQuoted(body.AsHTML(), quoted),
 		},
-	})
+	}
+	if len(bcc) > 0 {
+		patch["bccRecipients"] = recipients(bcc)
+	}
+	return json.Marshal(patch)
 }
 
 // DecodeAttachment extracts the file name and decoded bytes from a Graph

@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.3.1 (unreleased)
+
+### mail: `--bcc` on send, draft and reply
+
+- `m365 mail send`, `draft` and `reply` take `--bcc` (repeatable or
+  comma-separated). Graph: `bccRecipients` on the message, on the `reply`
+  payload (`message.bccRecipients` next to `comment`) and in the reply-draft
+  PATCH. EWS: `BccRecipients` in `CreateItem` and in `ReplyToItem`.
+- **BCC passes the send guardrail like To/Cc.** One BCC outside `send_allow`
+  turns a send or reply into a draft (`blocked` lists it). The guardrail is fed
+  from `Message.AllRecipients()` / `mail.WithBcc`, so it cannot see To/Cc only.
+- JSON envelopes report `bcc`.
+- Skill: use `--bcc` only when the user asked for it; never send mail through
+  your own script or a direct Graph/EWS call (that skips the guardrail).
+
+Why: an agent needed "BCC to my principal on every external mail", m365 could
+not do it, and the agent wrote its own Graph `sendMail` script, which skipped
+`send_allow` entirely.
+
 ## v0.3.0-rc (unreleased)
 
 ### mail watch: state v2 (Graph)

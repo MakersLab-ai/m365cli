@@ -10,11 +10,11 @@ import (
 // impersonated mailbox, saving a copy to Sent Items. EWS resolves the original
 // server-side from its item id; only the id is needed (ChangeKey is optional and
 // not stable, so it is omitted).
-func (c *Client) Reply(ctx context.Context, mailbox, refItemID string, body Body, replyAll bool) error {
+func (c *Client) Reply(ctx context.Context, mailbox, refItemID string, body Body, replyAll bool, bcc []string) error {
 	if err := c.requireAllowed(mailbox); err != nil {
 		return err
 	}
-	env, err := c.post(ctx, replyEnvelope(mailbox, refItemID, body, replyAll, "SendAndSaveCopy", "sentitems"))
+	env, err := c.post(ctx, replyEnvelope(mailbox, refItemID, body, replyAll, bcc, "SendAndSaveCopy", "sentitems"))
 	if err != nil {
 		return err
 	}
@@ -23,11 +23,11 @@ func (c *Client) Reply(ctx context.Context, mailbox, refItemID string, body Body
 }
 
 // CreateReplyDraft saves an unsent reply draft and returns its item id.
-func (c *Client) CreateReplyDraft(ctx context.Context, mailbox, refItemID string, body Body, replyAll bool) (string, error) {
+func (c *Client) CreateReplyDraft(ctx context.Context, mailbox, refItemID string, body Body, replyAll bool, bcc []string) (string, error) {
 	if err := c.requireAllowed(mailbox); err != nil {
 		return "", err
 	}
-	env, err := c.post(ctx, replyEnvelope(mailbox, refItemID, body, replyAll, "SaveOnly", "drafts"))
+	env, err := c.post(ctx, replyEnvelope(mailbox, refItemID, body, replyAll, bcc, "SaveOnly", "drafts"))
 	if err != nil {
 		return "", err
 	}
@@ -42,8 +42,9 @@ func (c *Client) CreateReplyDraft(ctx context.Context, mailbox, refItemID string
 }
 
 // replyEnvelope builds a CreateItem with a ReplyToItem/ReplyAllToItem response
-// object. Child order is schema-fixed: ReferenceItemId before NewBodyContent.
-func replyEnvelope(mailbox, refItemID string, body Body, replyAll bool, disposition, savedFolder string) []byte {
+// object. Child order is schema-fixed: BccRecipients, then ReferenceItemId,
+// then NewBodyContent.
+func replyEnvelope(mailbox, refItemID string, body Body, replyAll bool, bcc []string, disposition, savedFolder string) []byte {
 	tag := "ReplyToItem"
 	if replyAll {
 		tag = "ReplyAllToItem"
@@ -52,10 +53,11 @@ func replyEnvelope(mailbox, refItemID string, body Body, replyAll bool, disposit
 	b.WriteString(envelopeHead(mailbox))
 	fmt.Fprintf(&b, `<m:CreateItem MessageDisposition="%s">`+
 		`<m:SavedItemFolderId><t:DistinguishedFolderId Id="%s"/></m:SavedItemFolderId>`+
-		`<m:Items><t:%s>`+
-		`<t:ReferenceItemId Id="%s"/>`+
+		`<m:Items><t:%s>`, disposition, savedFolder, tag)
+	writeRecipients(&b, "BccRecipients", bcc)
+	fmt.Fprintf(&b, `<t:ReferenceItemId Id="%s"/>`+
 		`<t:NewBodyContent BodyType="%s">%s</t:NewBodyContent>`+
 		`</t:%s></m:Items></m:CreateItem></soap:Body></soap:Envelope>`,
-		disposition, savedFolder, tag, esc(refItemID), bodyType(body), esc(body.Content), tag)
+		esc(refItemID), bodyType(body), esc(body.Content), tag)
 	return b.Bytes()
 }

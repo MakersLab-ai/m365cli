@@ -126,7 +126,7 @@ func newMailSearchCmd() *cobra.Command {
 
 func newMailSendCmd() *cobra.Command {
 	var mailbox, subject, bodyFile, cc string
-	var to, attachPaths []string
+	var to, bcc, attachPaths []string
 	var asHTML bool
 	cmd := &cobra.Command{
 		Use:   "send --to <addr> --subject <s> --body-file <f>",
@@ -136,7 +136,7 @@ func newMailSendCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			msg, err := composeMessage(subject, bodyFile, to, cc, asHTML)
+			msg, err := composeMessage(subject, bodyFile, to, cc, bcc, asHTML)
 			if err != nil {
 				return err
 			}
@@ -145,8 +145,7 @@ func newMailSendCmd() *cobra.Command {
 				return err
 			}
 
-			recipients := append(append([]string{}, msg.To...), msg.Cc...)
-			plan := mail.PlanSend(cfg, recipients)
+			plan := mail.PlanSend(cfg, msg.AllRecipients())
 			if plan.Action == mail.DraftOnly {
 				fmt.Fprintf(os.Stderr, "send guardrail: %v not in send_allow — saving as draft for review\n", plan.Blocked)
 				return createDraft(cmd.Context(), client, mbx, msg, plan.Blocked, nil, atts)
@@ -156,7 +155,7 @@ func newMailSendCmd() *cobra.Command {
 				if err := client.Mail().Send(cmd.Context(), mbx, msg); err != nil {
 					return err
 				}
-				return output.WriteJSON(os.Stdout, map[string]any{"sent": true, "mailbox": mbx, "to": msg.To})
+				return output.WriteJSON(os.Stdout, map[string]any{"sent": true, "mailbox": mbx, "to": msg.To, "bcc": msg.Bcc})
 			}
 			// Attachments can only be added to a message that exists, so the
 			// mail is built as a draft and then sent.
@@ -167,17 +166,17 @@ func newMailSendCmd() *cobra.Command {
 			if err := sendDraftWith(cmd.Context(), client, mbx, id, nil, atts); err != nil {
 				return err
 			}
-			return output.WriteJSON(os.Stdout, map[string]any{"sent": true, "mailbox": mbx, "to": msg.To, "attachments": len(atts)})
+			return output.WriteJSON(os.Stdout, map[string]any{"sent": true, "mailbox": mbx, "to": msg.To, "bcc": msg.Bcc, "attachments": len(atts)})
 		},
 	}
-	addComposeFlags(cmd, &mailbox, &subject, &bodyFile, &cc, &to, &asHTML)
+	addComposeFlags(cmd, &mailbox, &subject, &bodyFile, &cc, &to, &bcc, &asHTML)
 	addAttachFlag(cmd, &attachPaths)
 	return cmd
 }
 
 func newMailDraftCmd() *cobra.Command {
 	var mailbox, subject, bodyFile, cc string
-	var to, inlineImages, attachPaths []string
+	var to, bcc, inlineImages, attachPaths []string
 	var asHTML bool
 	cmd := &cobra.Command{
 		Use:   "draft --to <addr> --subject <s> --body-file <f>",
@@ -187,7 +186,7 @@ func newMailDraftCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			msg, err := composeMessage(subject, bodyFile, to, cc, asHTML)
+			msg, err := composeMessage(subject, bodyFile, to, cc, bcc, asHTML)
 			if err != nil {
 				return err
 			}
@@ -202,7 +201,7 @@ func newMailDraftCmd() *cobra.Command {
 			return createDraft(cmd.Context(), client, mbx, msg, nil, images, atts)
 		},
 	}
-	addComposeFlags(cmd, &mailbox, &subject, &bodyFile, &cc, &to, &asHTML)
+	addComposeFlags(cmd, &mailbox, &subject, &bodyFile, &cc, &to, &bcc, &asHTML)
 	cmd.Flags().StringArrayVar(&inlineImages, "inline-image", nil, "attach an inline image as cid=path, referenced from the body as <img src=\"cid:…\"> (repeatable)")
 	addAttachFlag(cmd, &attachPaths)
 	return cmd
@@ -210,10 +209,11 @@ func newMailDraftCmd() *cobra.Command {
 
 // --- shared compose helpers ---
 
-func addComposeFlags(cmd *cobra.Command, mailbox, subject, bodyFile, cc *string, to *[]string, asHTML *bool) {
+func addComposeFlags(cmd *cobra.Command, mailbox, subject, bodyFile, cc *string, to, bcc *[]string, asHTML *bool) {
 	cmd.Flags().StringVar(mailbox, "mailbox", "", "mailbox to send from (defaults to default_mailbox)")
 	cmd.Flags().StringSliceVar(to, "to", nil, "recipient address (repeatable)")
 	cmd.Flags().StringVar(cc, "cc", "", "cc address (comma-separated)")
+	addBccFlag(cmd, bcc)
 	cmd.Flags().StringVar(subject, "subject", "", "message subject")
 	cmd.Flags().StringVar(bodyFile, "body-file", "", "path to a file containing the message body (avoids shell escaping)")
 	cmd.Flags().BoolVar(asHTML, "html", false, "the body file already contains HTML — send it as an HTML body instead of plain text")
@@ -229,7 +229,13 @@ func noteAutoHTML(body string, asHTML bool) {
 	}
 }
 
-func composeMessage(subject, bodyFile string, to []string, cc string, asHTML bool) (mail.Message, error) {
+// addBccFlag registers --bcc. BCC recipients go through the send guardrail
+// exactly like To/Cc: one outside send_allow turns the send into a draft.
+func addBccFlag(cmd *cobra.Command, bcc *[]string) {
+	cmd.Flags().StringSliceVar(bcc, "bcc", nil, "bcc address (repeatable or comma-separated; checked against send_allow like --to)")
+}
+
+func composeMessage(subject, bodyFile string, to []string, cc string, bcc []string, asHTML bool) (mail.Message, error) {
 	if len(to) == 0 {
 		return mail.Message{}, fmt.Errorf("at least one --to recipient is required")
 	}
@@ -250,6 +256,7 @@ func composeMessage(subject, bodyFile string, to []string, cc string, asHTML boo
 		Body:    mail.Body{Content: string(body), HTML: asHTML},
 		To:      to,
 		Cc:      ccList,
+		Bcc:     bcc,
 	}, nil
 }
 
@@ -269,6 +276,7 @@ func createDraft(ctx context.Context, client backend.Backend, mbx string, msg ma
 		"draft":        true,
 		"draft_id":     id,
 		"mailbox":      mbx,
+		"bcc":          msg.Bcc,
 		"blocked":      blocked,
 		"draftReason":  draftReason(blocked),
 		"inlineImages": len(images),

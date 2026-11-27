@@ -152,7 +152,7 @@ func TestDecodeAttachmentRejectsMissingContent(t *testing.T) {
 func TestBuildReplyCommentConvertsPlainTextToHTML(t *testing.T) {
 	// Graph injects `comment` into the reply's HTML body, so a plain-text
 	// comment loses every line break. Convert before handing it over.
-	payload, err := BuildReplyComment(Body{Content: "Hallo Sandra,\n\ndanke dir."})
+	payload, err := BuildReplyComment(Body{Content: "Hallo Sandra,\n\ndanke dir."}, nil)
 	if err != nil {
 		t.Fatalf("BuildReplyComment: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestBuildReplyCommentConvertsPlainTextToHTML(t *testing.T) {
 }
 
 func TestBuildReplyCommentPassesHTMLThrough(t *testing.T) {
-	payload, err := BuildReplyComment(Body{Content: "<p>Hallo</p>", HTML: true})
+	payload, err := BuildReplyComment(Body{Content: "<p>Hallo</p>", HTML: true}, nil)
 	if err != nil {
 		t.Fatalf("BuildReplyComment: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestBuildMessageMarksHTMLBodies(t *testing.T) {
 func TestBuildReplyBodyPatchIsAlwaysHTML(t *testing.T) {
 	// The reply draft Graph hands back is an HTML message; patching it with a
 	// Text body collapses the text into a single paragraph.
-	payload, err := BuildReplyBodyPatch(Body{Content: "eins\nzwei"}, "")
+	payload, err := BuildReplyBodyPatch(Body{Content: "eins\nzwei"}, "", nil)
 	if err != nil {
 		t.Fatalf("BuildReplyBodyPatch: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestBuildMessageKeepsProseAsText(t *testing.T) {
 func TestBuildReplyCommentKeepsHTMLFragmentUnescaped(t *testing.T) {
 	// Agents learned to hand-write HTML fragments for replies. Escaping those
 	// now would show tags where the old behaviour accidentally rendered.
-	payload, err := BuildReplyComment(Body{Content: "<p>Hallo Sandra,</p><p>danke dir.</p>"})
+	payload, err := BuildReplyComment(Body{Content: "<p>Hallo Sandra,</p><p>danke dir.</p>"}, nil)
 	if err != nil {
 		t.Fatalf("BuildReplyComment: %v", err)
 	}
@@ -263,5 +263,122 @@ func TestBuildReplyCommentKeepsHTMLFragmentUnescaped(t *testing.T) {
 	}
 	if m["comment"] != "<p>Hallo Sandra,</p><p>danke dir.</p>" {
 		t.Errorf("comment = %v, want verbatim", m["comment"])
+	}
+}
+
+// --- BCC (GC ac4ceb28) ---
+
+func TestBuildSendMailCarriesBcc(t *testing.T) {
+	payload, err := BuildSendMail(Message{Subject: "S", Body: Body{Content: "B"}, To: []string{"a@p.com"}, Bcc: []string{"boss@p.com"}})
+	if err != nil {
+		t.Fatalf("BuildSendMail: %v", err)
+	}
+	var m struct {
+		Message struct {
+			Bcc []recipient `json:"bccRecipients"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(payload, &m); err != nil {
+		t.Fatalf("payload not JSON: %v", err)
+	}
+	if len(m.Message.Bcc) != 1 || m.Message.Bcc[0].EmailAddress.Address != "boss@p.com" {
+		t.Errorf("bccRecipients = %+v, want [boss@p.com]", m.Message.Bcc)
+	}
+}
+
+func TestBuildMessageOmitsEmptyBcc(t *testing.T) {
+	payload, err := BuildMessage(Message{Subject: "S", Body: Body{Content: "B"}, To: []string{"a@p.com"}})
+	if err != nil {
+		t.Fatalf("BuildMessage: %v", err)
+	}
+	var m map[string]any
+	_ = json.Unmarshal(payload, &m)
+	if _, ok := m["bccRecipients"]; ok {
+		t.Errorf("empty bcc must be omitted: %s", payload)
+	}
+}
+
+func TestAllRecipientsIncludesBcc(t *testing.T) {
+	// The guardrail is fed from AllRecipients: a BCC that skipped it would be
+	// the one recipient nobody else on the mail can see.
+	got := Message{To: []string{"a@p.com"}, Cc: []string{"c@p.com"}, Bcc: []string{"b@x.com"}}.AllRecipients()
+	if len(got) != 3 || got[2] != "b@x.com" {
+		t.Errorf("AllRecipients = %v, want To, Cc and Bcc", got)
+	}
+}
+
+func TestPlanSendDraftsWhenOnlyBccIsOutsideSendAllow(t *testing.T) {
+	cfg := &config.Config{SendAllow: []string{"a@p.com"}}
+	msg := Message{To: []string{"a@p.com"}, Bcc: []string{"stranger@x.com"}}
+	plan := PlanSend(cfg, msg.AllRecipients())
+	if plan.Action != DraftOnly || len(plan.Blocked) != 1 || plan.Blocked[0] != "stranger@x.com" {
+		t.Errorf("plan = %+v, want DraftOnly blocked on the BCC", plan)
+	}
+}
+
+func TestBuildReplyCommentCarriesBcc(t *testing.T) {
+	payload, err := BuildReplyComment(Body{Content: "ok"}, []string{"boss@p.com"})
+	if err != nil {
+		t.Fatalf("BuildReplyComment: %v", err)
+	}
+	var m struct {
+		Comment string `json:"comment"`
+		Message struct {
+			Bcc  []recipient    `json:"bccRecipients"`
+			Body map[string]any `json:"body"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(payload, &m); err != nil {
+		t.Fatalf("payload not JSON: %v", err)
+	}
+	if len(m.Message.Bcc) != 1 || m.Message.Bcc[0].EmailAddress.Address != "boss@p.com" {
+		t.Errorf("message.bccRecipients = %+v", m.Message.Bcc)
+	}
+	// Graph rejects comment + message.body together (400) — never set both.
+	if m.Message.Body != nil {
+		t.Errorf("message.body must not be set alongside comment: %s", payload)
+	}
+	if m.Comment == "" {
+		t.Errorf("comment lost: %s", payload)
+	}
+}
+
+func TestBuildReplyCommentWithoutBccHasNoMessage(t *testing.T) {
+	payload, err := BuildReplyComment(Body{Content: "ok"}, nil)
+	if err != nil {
+		t.Fatalf("BuildReplyComment: %v", err)
+	}
+	var m map[string]any
+	_ = json.Unmarshal(payload, &m)
+	if _, ok := m["message"]; ok {
+		t.Errorf("no bcc ⇒ payload unchanged ({comment} only): %s", payload)
+	}
+}
+
+func TestBuildReplyBodyPatchCarriesBcc(t *testing.T) {
+	payload, err := BuildReplyBodyPatch(Body{Content: "ok"}, "", []string{"boss@p.com"})
+	if err != nil {
+		t.Fatalf("BuildReplyBodyPatch: %v", err)
+	}
+	var m struct {
+		Bcc []recipient `json:"bccRecipients"`
+	}
+	_ = json.Unmarshal(payload, &m)
+	if len(m.Bcc) != 1 || m.Bcc[0].EmailAddress.Address != "boss@p.com" {
+		t.Errorf("bccRecipients = %+v (%s)", m.Bcc, payload)
+	}
+}
+
+func TestWithBccFeedsReplyGuardrail(t *testing.T) {
+	// reply: the recipients come from the original message, the BCC from the
+	// caller — both must reach PlanSend, and the input must not be mutated.
+	visible := []string{"a@p.com"}
+	cfg := &config.Config{SendAllow: []string{"a@p.com"}}
+	plan := PlanSend(cfg, WithBcc(visible, []string{"stranger@x.com"}))
+	if plan.Action != DraftOnly {
+		t.Errorf("reply with external BCC = %v, want DraftOnly", plan.Action)
+	}
+	if len(visible) != 1 {
+		t.Errorf("WithBcc mutated its input: %v", visible)
 	}
 }
